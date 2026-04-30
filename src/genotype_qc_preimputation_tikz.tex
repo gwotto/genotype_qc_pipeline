@@ -1,0 +1,145 @@
+\documentclass{standalone}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit, backgrounds}
+
+\definecolor{clpurple}{RGB}{83,74,183}
+\definecolor{clpurplefill}{RGB}{206,203,246}
+\definecolor{clteal}{RGB}{15,110,86}
+\definecolor{cltealfill}{RGB}{159,225,203}
+\definecolor{clcoral}{RGB}{153,60,29}
+\definecolor{clcoralfill}{RGB}{245,196,179}
+\definecolor{clblue}{RGB}{24,95,165}
+\definecolor{clbluefill}{RGB}{181,212,244}
+\definecolor{clgray}{RGB}{95,94,90}
+\definecolor{clgrayfill}{RGB}{211,209,199}
+\definecolor{sectionbg}{RGB}{245,244,240}
+
+\tikzset{
+  base/.style={
+    rectangle, rounded corners=6pt,
+    minimum width=7cm, minimum height=0.9cm,
+    align=center, font=\small,
+    inner sep=6pt, line width=0.4pt
+  },
+  io/.style    = {base, fill=clgrayfill,   draw=clgray},
+  calling/.style={base, fill=clpurplefill, draw=clpurple},
+  snpqc/.style = {base, fill=cltealfill,   draw=clteal},
+  sampleqc/.style={base, fill=clcoralfill, draw=clcoral},
+  ancestry/.style={base, fill=clbluefill,  draw=clblue},
+  arr/.style   = {-{Stealth[length=5pt]}, line width=0.6pt, gray!70},
+  section/.style={font=\footnotesize\itshape, text=gray!70},
+  excl/.style  = {font=\footnotesize, text=clcoral, align=left},
+  secbox/.style= {fill=sectionbg, draw=gray!25, line width=0.3pt,
+                  rounded corners=4pt, inner sep=4pt}
+}
+
+\begin{document}
+\begin{tikzpicture}[node distance=0.45cm]
+
+%% ── Input ────────────────────────────────────────────────
+\node[io] (raw) {Raw genotype data (IDAT / GTC)};
+
+%% ── Clustering ───────────────────────────────────────────
+\node[calling, below=of raw] (call)
+  {\textbf{Clustering \& genotype calling}\\
+   {\footnotesize GenomeStudio / zCall / BeadStudio}};
+
+\draw[arr] (raw) -- (call);
+
+%% ── SNP QC section ───────────────────────────────────────
+\node[snpqc, below=0.7cm of call] (snpcr)
+  {\textbf{SNP call rate filter}\\
+   {\footnotesize Exclude SNPs missing $>$2--5\% of samples}};
+
+\node[snpqc, below=of snpcr] (maf)
+  {\textbf{Minor allele frequency (MAF)}\\
+   {\footnotesize Exclude SNPs with MAF $<$1--5\%}};
+
+\node[snpqc, below=of maf] (hwe)
+  {\textbf{Hardy--Weinberg equilibrium (HWE)}\\
+   {\footnotesize Exclude SNPs $p < 1\times10^{-6}$ (controls only)}};
+
+\draw[arr] (call)  -- (snpcr);
+\draw[arr] (snpcr) -- (maf);
+\draw[arr] (maf)   -- (hwe);
+
+%% SNP section background
+\begin{scope}[on background layer]
+  \node[secbox, fit=(snpcr)(maf)(hwe),
+        label={[section, anchor=south west]north west:SNP-level QC}] {};
+\end{scope}
+
+%% ── Sample QC section ────────────────────────────────────
+\node[sampleqc, below=0.7cm of hwe] (sampcr)
+  {\textbf{Sample call rate filter}\\
+   {\footnotesize Exclude samples missing $>$2--5\% of SNPs}};
+
+\node[sampleqc, below=of sampcr] (sex)
+  {\textbf{Sex check}\\
+   {\footnotesize $F$ statistic on chrX; flag mismatches}};
+
+\node[sampleqc, below=of sex] (het)
+  {\textbf{Heterozygosity rate}\\
+   {\footnotesize Exclude $>\!\pm3\,$SD from mean}};
+
+\draw[arr] (hwe)    -- (sampcr);
+\draw[arr] (sampcr) -- (sex);
+\draw[arr] (sex)    -- (het);
+
+\begin{scope}[on background layer]
+  \node[secbox, fit=(sampcr)(sex)(het),
+        label={[section, anchor=south west]north west:Sample-level QC}] {};
+\end{scope}
+
+%% ── Ancestry & relatedness ───────────────────────────────
+\node[ancestry, below=0.7cm of het] (pca)
+  {\textbf{Population stratification (PCA)}\\
+   {\footnotesize LD-pruned SNPs; project onto 1KG / HapMap}};
+
+\node[ancestry, below=of pca] (ibd)
+  {\textbf{Relatedness filter (IBD)}\\
+   {\footnotesize Exclude PI\_HAT $>0.1875$ (2nd-degree relatives)}};
+
+\draw[arr] (het) -- (pca);
+\draw[arr] (pca) -- (ibd);
+
+\begin{scope}[on background layer]
+  \node[secbox, fit=(pca)(ibd),
+        label={[section, anchor=south west]north west:Ancestry \& relatedness}] {};
+\end{scope}
+
+%% ── Output ───────────────────────────────────────────────
+\node[io, below=0.7cm of ibd] (out)
+  {QC-passed data $\longrightarrow$ imputation};
+
+\draw[arr] (ibd) -- (out);
+
+%% ── Exclusion annotations (right side) ──────────────────
+% SNP exclusions
+\draw[gray!40, dashed, line width=0.3pt]
+  ([xshift=2mm]snpcr.east) -- ++(1.1,0) coordinate (A1)
+  ([xshift=2mm]hwe.east)   -- ++(1.1,0) coordinate (A2);
+\draw[gray!40, dashed, line width=0.3pt] (A1) -- (A2);
+\draw[arr] ($(A1)!0.5!(A2)$) -- ++(0.5,0)
+  node[excl, right] {SNPs\\excluded};
+
+% Sample exclusions
+\draw[gray!40, dashed, line width=0.3pt]
+  ([xshift=2mm]sampcr.east) -- ++(1.1,0) coordinate (B1)
+  ([xshift=2mm]het.east)    -- ++(1.1,0) coordinate (B2);
+\draw[gray!40, dashed, line width=0.3pt] (B1) -- (B2);
+\draw[arr] ($(B1)!0.5!(B2)$) -- ++(0.5,0)
+  node[excl, right] {Samples\\excluded};
+
+% Ancestry outliers
+\draw[arr, gray!40, dashed]
+  ([xshift=2mm]pca.east) -- ++(1.6,0)
+  node[excl, right] {Ancestry\\outliers};
+
+% Related individuals
+\draw[arr, gray!40, dashed]
+  ([xshift=2mm]ibd.east) -- ++(1.6,0)
+  node[excl, right] {Related\\individuals};
+
+\end{tikzpicture}
+\end{document}

@@ -1,0 +1,31 @@
+# Quarto build outputs
+*_files/
+*_cache/
+*.html
+*.pdf
+*.docx
+*.epub
+*.odt
+*.pptx
+*.log
+*.out
+
+auto/
+
+.DS_Store
+
+renv
+
+results/
+data/
+
+# Intermediate files from rendering
+.Rhistory
+.RData
+.Rproj.user/
+
+# Quarto extension artifacts
+.qmd/
+.quarto/
+
+cromwell*/

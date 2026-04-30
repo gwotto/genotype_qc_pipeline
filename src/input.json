@@ -1,0 +1,9 @@
+{
+  "SNP_QC_Pipeline.sample_id": "affy_500k",
+  "SNP_QC_Pipeline.bim_file": "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/data/data.bim",
+  "SNP_QC_Pipeline.bed_file": "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/data/data.bed",
+  "SNP_QC_Pipeline.fam_file": "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/data/data.fam",
+  "SNP_QC_Pipeline.liftOver_chain": "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/data/hg18ToHg19.over.chain.gz",
+  "SNP_QC_Pipeline.hrc_reference_tab": "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/data/HRC.r1-1.GRCh37.wgs.mac5.sites.tab"
+
+}
