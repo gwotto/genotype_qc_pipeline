@@ -34,6 +34,11 @@ The pipeline graph:
 
 ![genotype_qc_preimputation pipeline graph](genotype_qc_preimputation.png "genotype_qc_preimputation pipeline graph")
 
+
+A flow diagram of the pipeline:
+
+![genotype_qc_preimputation pipeline flow diagram](genotype_qc_preimputation_mm.png "genotype_qc_preimputation pipeline flow diagram")
+
 ---
 
 ## Step-by-step explanation
