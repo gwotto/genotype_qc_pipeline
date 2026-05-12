@@ -1,0 +1,17 @@
+name: genotype-qc
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - plink=1.90b6
+  - plink2>=2.0
+  - r-base>=4.0
+  - r-ggplot2
+  - r-dplyr
+  - r-tidyr
+  - r-readr
+  - perl
+  - bcftools>=1.17
+  - htslib>=1.17       # provides bgzip and tabix
+  - openjdk>=11        # required for Cromwell
