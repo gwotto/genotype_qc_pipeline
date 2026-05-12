@@ -266,9 +266,41 @@ can be deleted once the run is verified.
 
 Option 1: conda (recommended):
 
+Create the environment from the provided `environment.yml` file in the
+repository root. This installs all required tools (PLINK 1.9, PLINK2,
+R ≥ 4.0, Perl, bcftools, bgzip, tabix) and Java in a single step:
+
 ```bash
-conda install -c bioconda plink plink2 r-base perl bcftools htslib
+conda env create -f environment.yml
+conda activate genotype-qc
 ```
+
+To update an existing environment after the file changes:
+
+```bash
+conda env update -f environment.yml --prune
+```
+
+R packages (ggplot2, dplyr, tidyr, readr, patchwork, scales) are included
+in `environment.yml` via `r-*` conda packages. If you prefer to install them
+from CRAN instead:
+
+```r
+install.packages(c("ggplot2", "dplyr", "tidyr", "readr", "patchwork", "scales"))
+```
+
+The Perl module `Term::ReadKey` (required by Will Rayner's check-bim script)
+is not on conda; install it via cpan:
+
+```bash
+cpan App::cpanminus
+cpanm Term::ReadKey
+```
+
+Cromwell is not included in the conda environment (it is a standalone JAR).
+Download it from https://github.com/broadinstitute/cromwell/releases and
+place it somewhere on your `$PATH`, or reference it by full path. Java ≥ 17
+is required (provided by the `openjdk` package in the environment).
 
 Option 2: UCL Myriad HPC modules:
 ```bash
@@ -277,21 +309,34 @@ module load plink2/2.0
 module load r/4.2.1
 ```
 
-Option 3: Manual install: Download PLINK 1.9 and PLINK2 from
-https://www.cog-genomics.org/plink/ and place the binaries on `$PATH`, or supply their paths via `plink_bin` / `plink2_bin` in the JSON.
+Option 3: Manual install:
 
-- java version >= 17
+- PLINK 1.9 and PLINK2: download binaries from
+  https://www.cog-genomics.org/plink/ and place them on `$PATH`, or supply
+  their paths via `plink_bin` / `plink2_bin` in the inputs JSON.
+- R ≥ 4.0: https://cran.r-project.org/. Install required packages from CRAN:
+  ```r
+  install.packages(c("ggplot2", "dplyr", "tidyr", "readr", "patchwork", "scales"))
+  ```
+- bcftools / bgzip / tabix: install via your system package manager, e.g.
+  ```bash
+  # Debian/Ubuntu
+  sudo apt install bcftools tabix
+  # macOS
+  brew install bcftools htslib
+  ```
+  or download from https://www.htslib.org/download/.
+- Perl and `Term::ReadKey` (required by the check-bim script):
+  ```bash
+  cpan App::cpanminus
+  cpanm Term::ReadKey
+  ```
+- Java ≥ 17 (for Cromwell): https://adoptium.net/ or via your package manager.
+- Cromwell: download the standalone JAR from
+  https://github.com/broadinstitute/cromwell/releases and place it on `$PATH`
+  or reference it by full path when running the pipeline.
 
-- perl module Term::ReadKey
 
-```{bash}
-cpan App:cpanminus
-cpanm Term::ReadKey
-```
-
-- R packages: dplyr, ggplot2, patchwork, scales
-
-- TODO: conda environment file with all dependencies specified, including R packages.
 
 ### 2. Create an inputs JSON file
 
