@@ -23,7 +23,7 @@ Input genotypes (bed/bim/fam or ped/map)
     ├─ Step 6  : LD pruning                   select independent SNPs (used in steps 7 & 9)
     ├─ Step 7  : Heterozygosity filter        remove contaminated / inbred samples
     ├─ Step 8  : Restrict to autosomes        chromosomes 1–22 only
-    ├─ Step 9  : Relatedness filter           remove one of each related pair
+    ├─ Step 9  : Relatedness filter           remove one of each related pair (optional)
     ├─ Step 10 : PCA                          diagnostic population structure check
     └─ Step 11 : Prepare for imputation       strand-align and export per-chr VCFs
                                                     │
@@ -214,7 +214,7 @@ By default the pipeline expects `plink`, `plink2`, `Rscript`, `perl`, `bcftools`
 QC thresholds are defined in the json configuration file. The table lists values that are commonly used in similar pipelines.
 
 | Parameter | Meaning | Typical value | Remarks |
-|---|---|---|
+|---|---|---|---|
 | `geno_threshold` | Max SNP missingness rate | `0.05` | |
 | `mind_threshold` | Max sample missingness rate | `0.05` | |
 | `hwe_pvalue` | Min HWE p-value | `1e-6` | |
@@ -236,7 +236,7 @@ executor's working directory (`_miniwdl_run/` or `cromwell-executions/`) and
 can be deleted once the run is verified.
 
 | Output | Description | Remarks |
-|---|---|
+|---|---|---|
 | `pipeline_log` | Human-readable run summary: version, date, SNP/sample counts at each QC step | |
 | `final_bed/bim/fam` | QC-passed dataset — use this for downstream analyses | |
 | `sexcheck_report` | Full PLINK sex check results (if X SNPs present) | |
