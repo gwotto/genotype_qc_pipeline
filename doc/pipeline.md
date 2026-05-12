@@ -130,10 +130,9 @@ by Marees et al. (2018).
 Retains only chromosomes 1–22. Sex chromosomes and mitochondrial variants
 require specialised handling not included in this standard GWAS QC workflow.
 
-### Step 9 — Relatedness filtering
+### Step 9 — Relatedness filtering *(optional)*
 Cryptically related individuals (e.g. undisclosed family members, sample
-duplicates) violate the independence assumption in standard GWAS. Two methods
-are run on the LD-pruned SNPs:
+duplicates) violate the independence assumption in standard GWAS. Two methods are run on the LD-pruned SNPs:
 
 | Method | Tool | Metric | Use |
 |---|---|---|---|
@@ -143,6 +142,8 @@ are run on the LD-pruned SNPs:
 KING is preferred for removal decisions because it is robust to population
 stratification. A cutoff of 0.0884 corresponds approximately to 3rd-degree
 relatives (cousins).
+
+Set `run_relatedness_check = false` in the configuration json file to skip this step entirely — for example, when working with a cohort containing family trios. When skipped, the autosome-filtered dataset from step 8 passes directly to PCA.
 
 ### Step 10 — PCA *(diagnostic only)*
 Principal components are computed on the final QC-passed dataset using the
@@ -212,18 +213,18 @@ By default the pipeline expects `plink`, `plink2`, `Rscript`, `perl`, `bcftools`
 
 QC thresholds are defined in the json configuration file. The table lists values that are commonly used in similar pipelines.
 
-| Parameter | Meaning | Typical value |
+| Parameter | Meaning | Typical value | Remarks |
 |---|---|---|
-| `geno_threshold` | Max SNP missingness rate | `0.05` |
-| `mind_threshold` | Max sample missingness rate | `0.05` |
-| `hwe_pvalue` | Min HWE p-value | `1e-6` |
-| `maf_threshold` | Min MAF to retain a SNP | `0.01` |
-| `ld_r2` | Max r² for LD pruning | `0.2` |
-| `ld_window_kb` | LD pruning window size (kb) | `50` |
-| `ld_step` | LD pruning step size (SNPs) | `5` |
-| `pihat_min` | Min pi-hat to report a related pair | `0.2` |
-| `king_cutoff` | KING kinship cutoff for removal | `0.0884` |
-| `n_pcs` | Number of principal components to compute | `10` |
+| `geno_threshold` | Max SNP missingness rate | `0.05` | |
+| `mind_threshold` | Max sample missingness rate | `0.05` | |
+| `hwe_pvalue` | Min HWE p-value | `1e-6` | |
+| `maf_threshold` | Min MAF to retain a SNP | `0.01` | |
+| `ld_r2` | Max r² for LD pruning | `0.2` | |
+| `ld_window_kb` | LD pruning window size (kb) | `50` | |
+| `ld_step` | LD pruning step size (SNPs) | `5` | |
+| `pihat_min` | Min pi-hat to report a related pair | `0.2` | Only used if `run_relatedness_check = true` |
+| `king_cutoff` | KING kinship cutoff for removal | `0.0884` | Only used if `run_relatedness_check = true` |
+| `n_pcs` | Number of principal components to compute | `10` | |
 
 ---
 
@@ -234,27 +235,27 @@ Final QC-passed files are copied to `results/` after the run (see
 executor's working directory (`_miniwdl_run/` or `cromwell-executions/`) and
 can be deleted once the run is verified.
 
-| Output | Description |
+| Output | Description | Remarks |
 |---|---|
-| `pipeline_log` | Human-readable run summary: version, date, SNP/sample counts at each QC step |
-| `final_bed/bim/fam` | QC-passed dataset — use this for downstream analyses |
-| `sexcheck_report` | Full PLINK sex check results (if X SNPs present) |
-| `problem_samples` | Samples removed at sex check step |
-| `het_check_report` | Per-sample heterozygosity rates |
-| `het_fail_samples` | Samples removed at heterozygosity step |
-| `maf_plot` | MAF distribution and before/after barplot |
-| `maf_freq_before` | Allele frequencies before MAF filter (QC diagnostic) |
-| `maf_freq_after` | Allele frequencies after MAF filter (QC diagnostic) |
-| `pihat_genome` | All related pairs above `pihat_min` (informational) |
-| `king_cutoff_out_id` | Samples removed at relatedness step |
-| `prune_in` | LD-pruned SNP list (useful for PCA) |
-| `prune_out` | SNPs excluded by LD pruning |
-| `pca_eigenvec` | PC scores per sample |
-| `pca_eigenval` | Variance explained per PC |
-| `pca_plot` | Scatter plots of PC1–PC3 |
-| `imputation_vcfs` | Per-chromosome bgzipped VCFs for imputation server upload |
-| `imputation_vcf_tbis` | Tabix indices for imputation VCFs |
-| `check_bim_log` | Log from `HRC-1000G-check-bim.pl` |
+| `pipeline_log` | Human-readable run summary: version, date, SNP/sample counts at each QC step | |
+| `final_bed/bim/fam` | QC-passed dataset — use this for downstream analyses | |
+| `sexcheck_report` | Full PLINK sex check results (if X SNPs present) | |
+| `problem_samples` | Samples removed at sex check step | |
+| `het_check_report` | Per-sample heterozygosity rates | |
+| `het_fail_samples` | Samples removed at heterozygosity step | |
+| `maf_plot` | MAF distribution and before/after barplot | |
+| `maf_freq_before` | Allele frequencies before MAF filter (QC diagnostic) | |
+| `maf_freq_after` | Allele frequencies after MAF filter (QC diagnostic) | |
+| `pihat_genome` | All related pairs above `pihat_min` (informational) | Only present if `run_relatedness_check = true`|
+| `king_cutoff_out_id` | Samples removed at relatedness step | Only present if `run_relatedness_check = true` |
+| `prune_in` | LD-pruned SNP list (useful for PCA) | |
+| `prune_out` | SNPs excluded by LD pruning | |
+| `pca_eigenvec` | PC scores per sample | |
+| `pca_eigenval` | Variance explained per PC | |
+| `pca_plot` | Scatter plots of PC1–PC3 | |
+| `imputation_vcfs` | Per-chromosome bgzipped VCFs for imputation server upload | |
+| `imputation_vcf_tbis` | Tabix indices for imputation VCFs | |
+| `check_bim_log` | Log from `HRC-1000G-check-bim.pl` | |
 
 ---
 
@@ -290,6 +291,8 @@ cpanm Term::ReadKey
 
 - R packages: dplyr, ggplot2, patchwork, scales
 
+- TODO: conda environment file with all dependencies specified, including R packages.
+
 ### 2. Create an inputs JSON file
 
 ```json
@@ -314,6 +317,7 @@ cpanm Term::ReadKey
   "genotype_qc_preimputation.ld_r2":                     0.2,
   "genotype_qc_preimputation.ld_window_kb":              50,
   "genotype_qc_preimputation.ld_step":                   5,
+  "genotype_qc_preimputation.run_relatedness_check":     true,
   "genotype_qc_preimputation.pihat_min":                 0.2,
   "genotype_qc_preimputation.king_cutoff":               0.0884,
   "genotype_qc_preimputation.n_pcs":                     10

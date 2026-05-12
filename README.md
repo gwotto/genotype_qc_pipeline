@@ -37,3 +37,7 @@ java -jar cromwell-85.jar run src/genotype_qc_imputation.wdl -i inputs.json
 
 ```
 
+# TODO
+
+- pruning and pcr before and after relationship check.
+- include X-chromosome in the pipeline.
