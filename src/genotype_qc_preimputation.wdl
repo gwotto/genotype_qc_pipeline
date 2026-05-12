@@ -42,7 +42,7 @@ version 1.0
 workflow genotype_qc_preimputation {
 
     input {
-        # ── Input genotype files ───────────────────────────────────────────
+        # -- Input genotype files -------------------------------------------
         # Provide EITHER binary format (bed + bim + fam)
         # OR text format (ped + map). Binary is preferred.
         File? bed_file   # PLINK binary genotype matrix
@@ -54,7 +54,7 @@ workflow genotype_qc_preimputation {
 
         String output_prefix   # Prefix for all output files, e.g. "myStudy"
 
-        # ── Reference and helper script files ─────────────────────────────
+        # -- Reference and helper script files -----------------------------
         File ld_regions              # High-LD genomic regions to exclude during pruning
                                      # Format: 4-column BED (chr start end name)
         File handle_duplicates_r     # R script: resolves duplicate sample IDs in .fam
@@ -64,13 +64,18 @@ workflow genotype_qc_preimputation {
         File pca_plot_r      # R script: plots PCA results
         File maf_plot_r      # R script: plots MAF distribution and barplot
     
-        # ── Tool paths ─────────────────────────────────────────────────────
+        # -- Tool paths -----------------------------------------------------
         # Change these if tools are not on $PATH
         String plink_bin    # PLINK 1.9 binary
         String plink2_bin   # PLINK 2.0 binary (used for KING relatedness)
         String rscript_bin  # R interpreter
 
-        # ── QC thresholds ──────────────────────────────────────────────────
+        # -- Optional workflow steps -----------------------------------------
+        # Whether to run relatedness check (step 9) and remove related samples.
+        # Can be set true/false in the configuration file
+        Boolean run_relatedness_check = true 
+
+        # -- QC thresholds --------------------------------------------------
         # Typical values shown; adjust for your study.
         Float geno_threshold  # Max missing genotype rate per SNP    (e.g. 0.05 = 5%)
         Float mind_threshold  # Max missing genotype rate per sample (e.g. 0.05 = 5%)
@@ -97,7 +102,7 @@ workflow genotype_qc_preimputation {
 
     String pipeline_version = "1.0.0"
 
-    # ── Step 0: Convert text format to binary (skipped if bed/bim/fam provided) ──
+    # -- Step 0: Convert text format to binary (skipped if bed/bim/fam provided) --
     # PLINK binary format is faster for all downstream steps.
     if (!defined(bed_file)) {
         call ConvertToBinary {
@@ -114,7 +119,7 @@ workflow genotype_qc_preimputation {
     File qc0_bim = select_first([ConvertToBinary.out_bim, bim_file])
     File qc0_fam = select_first([ConvertToBinary.out_fam, fam_file])
 
-    # ── Step 0b: Remove duplicate sample IDs ──────────────────────────────
+    # -- Step 0b: Remove duplicate sample IDs ------------------------------
     # Duplicate IDs cause downstream PLINK errors; the R script resolves them
     # by appending a suffix to make each ID unique.
     call HandleDuplicates {
@@ -134,7 +139,7 @@ workflow genotype_qc_preimputation {
             label    = "Step 0b  Remove duplicate IDs"
     }
 
-    # ── Step 1: SNP missingness filter (--geno) ───────────────────────────
+    # -- Step 1: SNP missingness filter (--geno) ---------------------------
     # Removes SNPs with a call rate below (1 - geno_threshold).
     # Highly missing SNPs are likely to be poor-quality assays.
     call PlinkFilter as GenoFilter {
@@ -154,7 +159,7 @@ workflow genotype_qc_preimputation {
             label    = "Step 1   SNP missingness"
     }
 
-    # ── Step 2: Sample missingness filter (--mind) ────────────────────────
+    # -- Step 2: Sample missingness filter (--mind) ------------------------
     # Removes samples with a call rate below (1 - mind_threshold).
     # Highly missing samples indicate poor DNA quality or processing failure.
     call PlinkFilter as MindFilter {
@@ -174,7 +179,7 @@ workflow genotype_qc_preimputation {
             label    = "Step 2   Sample missingness"
     }
 
-    # ── Threshold sweep: informational only, does not affect QC outputs ───
+    # -- Threshold sweep: informational only, does not affect QC outputs ---
     # Runs PLINK across a range of --geno and --mind thresholds to show how
     # many SNPs/samples would be retained at each cutoff. Used to validate
     # the chosen thresholds. Results are plotted by an R script.
@@ -195,7 +200,7 @@ workflow genotype_qc_preimputation {
 
 
 
-    # ── Step 3: Sex check ─────────────────────────────────────────────────
+    # -- Step 3: Sex check -------------------------------------------------
     # Compares reported sex (from .fam) with X-chromosome heterozygosity.
     # Discordant samples may reflect sample swaps or genotyping errors.
     # Skipped entirely if the dataset contains no X-chromosome SNPs.
@@ -242,7 +247,7 @@ workflow genotype_qc_preimputation {
     ])
 
 
-    # ── Step 4: MAF filter & monomorphic SNP removal ──────────────────────
+    # -- Step 4: MAF filter & monomorphic SNP removal ----------------------
     # Removes SNPs with MAF = 0 (monomorphic) and below maf_threshold.
     # Monomorphic SNPs carry no association signal and cause numerical issues.
     # Applied here — before HWE and LD pruning — so that:
@@ -268,7 +273,7 @@ workflow genotype_qc_preimputation {
             label    = "Step 4   MAF filter"
     }
 
-    # ── Step 5: Hardy-Weinberg equilibrium filter ─────────────────────────
+    # -- Step 5: Hardy-Weinberg equilibrium filter -------------------------
     # Removes SNPs that deviate significantly from HWE in controls.
     # Extreme HWE deviation often indicates genotyping error.
     # Applied after MAF filter (step 4): HWE tests are unreliable for rare
@@ -291,7 +296,7 @@ workflow genotype_qc_preimputation {
     }
 
 
-    # ── Step 6: LD pruning ────────────────────────────────────────────────
+    # -- Step 6: LD pruning ------------------------------------------------
     # Generates a list of approximately independent SNPs by removing those
     # in high linkage disequilibrium. This pruned SNP set is used in the
     # heterozygosity check (step 7) and relatedness analysis (step 9) to
@@ -310,7 +315,7 @@ workflow genotype_qc_preimputation {
             plink_bin     = plink_bin
     }
 
-    # ── Step 7: Heterozygosity check ──────────────────────────────────────
+    # -- Step 7: Heterozygosity check --------------------------------------
     # Samples with unusually high or low heterozygosity are flagged.
     # High het → possible sample contamination.
     # Low het  → possible inbreeding or sample duplication.
@@ -344,7 +349,7 @@ workflow genotype_qc_preimputation {
             label    = "Step 7   Heterozygosity filter"
     }
 
-    # ── Step 8: Restrict to autosomes ─────────────────────────────────────
+    # -- Step 8: Restrict to autosomes -------------------------------------
     # Retains only chromosomes 1–22 for downstream association analysis.
     # Sex chromosomes and mitochondrial SNPs require separate handling.
     call PlinkFilter as AutosomeFilter {
@@ -364,12 +369,14 @@ workflow genotype_qc_preimputation {
             label    = "Step 8   Autosome filter (chr 1-22)"
     }
 
-    # ── Step 9: Relatedness filtering ─────────────────────────────────────
+    # -- Step 9: Relatedness filtering -------------------------------------
     # Identifies cryptically related samples using two methods:
     #   • pi-hat (PLINK --genome): proportion of IBD alleles shared
     #   • KING kinship coefficient (PLINK2 --king-cutoff): more robust in
     #     the presence of population stratification
     # Samples identified by KING as above the cutoff are removed.
+    
+    if (run_relatedness_check) {
     call RelatednessCheck {
         input:
             bed_file      = AutosomeFilter.out_bed,
@@ -399,8 +406,15 @@ workflow genotype_qc_preimputation {
             fam_file = RemoveRelated.out_fam,
             label    = "Step 9   Relatedness filter (KING)"
     }
+    }
 
-    # ── Step 10: PCA (pre-imputation, diagnostic only) ────────────────────
+String relatedness_log_line = select_first([
+    LogStep9.line,
+    "Step 9   Relatedness filter (KING)            [skipped]"
+])
+
+
+    # -- Step 10: PCA (pre-imputation, diagnostic only) --------------------
     # Computes principal components on the final QC-passed dataset using the
     # LD-pruned SNP list from step 6. Used to visualise population structure
     # and identify potential ancestry outliers BEFORE imputation.
@@ -410,9 +424,9 @@ workflow genotype_qc_preimputation {
     #       as covariates in the GWAS model.
     call PCA {
         input:
-            bed_file      = RemoveRelated.out_bed,
-            bim_file      = RemoveRelated.out_bim,
-            fam_file      = RemoveRelated.out_fam,
+            bed_file      = select_first([RemoveRelated.out_bed, AutosomeFilter.out_bed]),
+            bim_file      = select_first([RemoveRelated.out_bim, AutosomeFilter.out_bim]),
+            fam_file      = select_first([RemoveRelated.out_fam, AutosomeFilter.out_fam]),
             prune_in      = LdPruning.prune_in,
             n_pcs         = n_pcs,
             output_prefix = output_prefix + "_QC9_pca",
@@ -421,7 +435,7 @@ workflow genotype_qc_preimputation {
             pca_plot_r    = pca_plot_r
     }
 
-    # ── Step 11: Prepare for TOPMed imputation ────────────────────────────
+    # -- Step 11: Prepare for TOPMed imputation ----------------------------
     # Aligns strand orientation to the TOPMed reference panel using Will
     # Rayner's check-bim script. Removes SNPs not in the reference, ambiguous
     # A/T and C/G SNPs that cannot be strand-resolved, and SNPs with large
@@ -430,9 +444,9 @@ workflow genotype_qc_preimputation {
     # imputation server (https://imputation.biodatacatalyst.nhlbi.nih.gov).
     call PrepareForImputation {
         input:
-            bed_file        = RemoveRelated.out_bed,
-            bim_file        = RemoveRelated.out_bim,
-            fam_file        = RemoveRelated.out_fam,
+            bed_file        = select_first([RemoveRelated.out_bed, AutosomeFilter.out_bed]),
+            bim_file        = select_first([RemoveRelated.out_bim, AutosomeFilter.out_bim]),
+            fam_file        = select_first([RemoveRelated.out_fam, AutosomeFilter.out_fam]),
             check_bim_pl    = check_bim_pl,
             hrc_ref_freq    = hrc_ref_freq,
             output_prefix   = output_prefix + "_imputation",
@@ -444,7 +458,7 @@ workflow genotype_qc_preimputation {
 }
 
 
-    # ── Pipeline log ──────────────────────────────────────────────────────
+    # -- Pipeline log ------------------------------------------------------
     # Collect per-step SNP/sample counts into a single human-readable log.
     Array[String] log_lines = [
         LogStep0b.line,
@@ -456,7 +470,7 @@ workflow genotype_qc_preimputation {
         LdPruning.log_line,
         LogStep7.line,
         LogStep8.line,
-        LogStep9.line,
+        relatedness_log_line,
         PrepareForImputation.log_line
     ]
 
@@ -467,15 +481,15 @@ workflow genotype_qc_preimputation {
             step_summaries   = log_lines
     }
 
-    # ── Outputs ───────────────────────────────────────────────────────────
+    # -- Outputs -----------------------------------------------------------
     output {
         # Pipeline run log — SNP/sample counts at each QC step
         File pipeline_log = WriteLog.log
 
         # Final QC-passed dataset — use these for association testing
-        File final_bed = RemoveRelated.out_bed
-        File final_bim = RemoveRelated.out_bim
-        File final_fam = RemoveRelated.out_fam
+        File final_bed = select_first([RemoveRelated.out_bed, AutosomeFilter.out_bed])
+        File final_bim = select_first([RemoveRelated.out_bim, AutosomeFilter.out_bim])
+        File final_fam = select_first([RemoveRelated.out_fam, AutosomeFilter.out_fam])
 
         # Sex check outputs (only present if X-chromosome SNPs exist)
         File? sexcheck_report = SexCheck.sexcheck_report
@@ -490,9 +504,9 @@ workflow genotype_qc_preimputation {
         File maf_freq_before = MafFilter.freq_before
         File maf_freq_after  = MafFilter.freq_after
 
-        # Relatedness outputs
-        File pihat_genome       = RelatednessCheck.pihat_genome       # All pairs above pihat_min
-        File king_cutoff_out_id = RelatednessCheck.king_cutoff_out    # Samples removed by KING
+        # Relatedness outputs (relatedness filter is optional)
+        File? pihat_genome       = RelatednessCheck.pihat_genome       # All pairs above pihat_min
+        File? king_cutoff_out_id = RelatednessCheck.king_cutoff_out    # Samples removed by KING
 
         # LD-pruned SNP lists (used in steps 6 & 8; useful for PCA too)
         File prune_in  = LdPruning.prune_in

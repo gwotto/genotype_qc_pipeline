@@ -12,26 +12,29 @@ graph TD
     J --> K["LD Pruning<br/>--indep-pairwise"]
     K --> L["Extract LD-Pruned SNPs"]
     L --> M["Heterozygosity Check"]
-    L --> N["Relatedness Check<br/>--rel-cutoff 0.0884"]
+    L --> N{"Relatedness Check<br/>enabled?"}
     L --> O["PCA Analysis<br/>--pca"]
     M --> P["Remove Heterozygosity Outliers"]
-    N --> Q["Remove Related Individuals"]
-    P --> R["Final QC Dataset"]
-    Q --> R
-    O --> S["PCA Plot<br/>Diagnostic Only"]
-    R --> T{"Output<br/>Format"}
-    T -->|PLINK| U["Final PLINK Binary<br/>for Imputation"]
-    T -->|VCF| V["Per-Chromosome VCF<br/>for TOPMed"]
-    S -.->|Diagnostic| W["QC Summary Report"]
-    U --> W
-    V --> W
-    
+    N -->|Yes| Q["Relatedness Check<br/>--rel-cutoff 0.0884"]
+    N -->|No| R["Skip Relatedness Check"]
+    Q --> S["Remove Related Individuals"]
+    P --> T["Final QC Dataset"]
+    S --> T
+    R --> T
+    O --> U["PCA Plot<br/>Diagnostic Only"]
+    T --> V{"Output<br/>Format"}
+    V -->|PLINK| W["Final PLINK Binary<br/>for Imputation"]
+    V -->|VCF| X["Per-Chromosome VCF<br/>for TOPMed"]
+    U -.->|Diagnostic| Y["QC Summary Report"]
+    W --> Y
+    X --> Y
+
     style A fill:#e1f5ff
-    style U fill:#e1f5ff
-    style V fill:#e1f5ff
     style W fill:#e1f5ff
-    style S fill:#fff9c4
+    style X fill:#e1f5ff
+    style Y fill:#e1f5ff
+    style U fill:#fff9c4
     style O fill:#fff9c4
     style M fill:#fff9c4
-    style N fill:#fff9c4
+    style Q fill:#fff9c4
     
