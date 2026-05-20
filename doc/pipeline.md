@@ -421,94 +421,16 @@ cp "$RUNDIR/out/final_bed"/*.bed \
 ```
 ### 4. Run with Cromwell
 
+The cromwell wdl runner is a Java application that executes WDL workflows.
+
 ```bash
-cromwell run src/genotype_qc_preimputation.wdl --inputs inputs.json
+java -jar cromwell-<version>.jar run src/genotype_qc_preimputation.wdl --inputs inputs.json
 ```
 
-Once the run completes, collect all outputs into a timestamped subdirectory
-of `results/`. The script below uses the Cromwell run UUID as the directory
-name so each run's outputs are kept separate and can be traced back to the
-exact execution.
+Once the run completes, results can be collected from the cromwell execution directory. The default output path will be in `cromwell-executions/<pipeline>/<uuid>/`. A helper script is provided to collect all relevant outputs into a single directory for easier access and inspection:
 
-```bash
-# Root of the most recent Cromwell run
-RUNID=$(ls -t cromwell-executions/genotype_qc_preimputation/ | head -1)
-BASE="cromwell-executions/genotype_qc_preimputation/$RUNID"
-
-# Destination: results/<uuid>/  (unique per run, traceable to Cromwell logs)
-OUTDIR="results/$RUNID"
-mkdir -p "$OUTDIR"/{qc_dataset,plots,reports,vcfs,pca,ld_pruning}
-
-# ── Pipeline log (WriteLog) ───────────────────────────────────────────────────
-CALL="$BASE/call-WriteLog/execution"
-cp "$CALL"/*_pipeline.log "$OUTDIR/"
-
-# ── Final QC dataset (step 9 — RemoveRelated) ────────────────────────────────
-CALL="$BASE/call-RemoveRelated/execution"
-cp "$CALL"/*.bed "$CALL"/*.bim "$CALL"/*.fam "$OUTDIR/qc_dataset/"
-
-# ── Sex check report (step 3 — SexCheck / RemoveSexFails) ────────────────────
-# Only present if the dataset contained X-chromosome SNPs
-CALL="$BASE/call-SexCheck/execution"
-[ -d "$CALL" ] && cp "$CALL"/*.sexcheck "$OUTDIR/reports/" 2>/dev/null || true
-
-CALL="$BASE/call-RemoveSexFails/execution"
-[ -d "$CALL" ] && cp "$CALL"/*.fam "$OUTDIR/reports/sex_fail_samples.fam" 2>/dev/null || true
-
-# ── Heterozygosity report & fail list (step 7 — HetCheck / RemoveHetFails) ───
-CALL="$BASE/call-HetCheck/execution"
-cp "$CALL"/*.het "$OUTDIR/reports/"
-cp "$CALL"/*.png "$OUTDIR/plots/" 2>/dev/null || true
-
-CALL="$BASE/call-RemoveHetFails/execution"
-cp "$CALL"/*.txt "$OUTDIR/reports/het_fail_samples.txt" 2>/dev/null || true
-
-# ── MAF plot & frequency files (step 4 — MafFilter) ─────────────────────────
-CALL="$BASE/call-MafFilter/execution"
-cp "$CALL"/*.png "$OUTDIR/plots/"
-cp "$CALL"/*.frq "$OUTDIR/reports/"
-
-# ── Relatedness report (step 9 — RelatednessCheck) ──────────────────────────
-CALL="$BASE/call-RelatednessCheck/execution"
-cp "$CALL"/*.genome "$OUTDIR/reports/"
-cp "$CALL"/*.king.cutoff.out.id "$OUTDIR/reports/" 2>/dev/null || true
-
-# ── LD pruning SNP lists (step 6 — LdPruning) ────────────────────────────────
-CALL="$BASE/call-LdPruning/execution"
-cp "$CALL"/*.prune.in "$CALL"/*.prune.out "$OUTDIR/ld_pruning/"
-
-# ── PCA (step 10 — PCA) ───────────────────────────────────────────────────────
-CALL="$BASE/call-PCA/execution"
-cp "$CALL"/*.eigenvec "$CALL"/*.eigenval "$OUTDIR/pca/"
-cp "$CALL"/*.png "$OUTDIR/plots/" 2>/dev/null || true
-
-# ── Imputation VCFs (step 11 — PrepareForImputation) ─────────────────────────
-CALL="$BASE/call-PrepareForImputation/execution"
-cp "$CALL"/*_chr*.vcf.gz     "$OUTDIR/vcfs/"
-cp "$CALL"/*_chr*.vcf.gz.tbi "$OUTDIR/vcfs/"
-cp "$CALL"/check-bim.log     "$OUTDIR/reports/"
-
-echo "Done. Results written to: $OUTDIR"
-ls "$OUTDIR"/qc_dataset/ "$OUTDIR"/plots/ "$OUTDIR"/reports/ \
-   "$OUTDIR"/pca/ "$OUTDIR"/vcfs/ "$OUTDIR"/ld_pruning/
 ```
-
-If you prefer a human-readable name over the UUID, you can rename the
-directory afterwards:
-
-```bash
-mv "results/$RUNID" "results/genotype_qc_preimputation_$(date +%Y%m%d)"
-```
-
-After collecting outputs, verify sample and SNP counts decrease
-monotonically through the pipeline:
-
-```bash
-# Samples at each step (.fam lines = number of samples)
-wc -l "$BASE"/call-*/execution/*.fam | sort -k2
-
-# SNPs at each step (.bim lines = number of SNPs)
-wc -l "$BASE"/call-*/execution/*.bim | sort -k2
+bash collect_cromwell_results.sh <cromwell_run> <output_dir>
 ```
 
 ---
