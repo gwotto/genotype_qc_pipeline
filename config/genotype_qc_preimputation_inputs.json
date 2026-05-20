@@ -1,23 +1,24 @@
 {
   
-  "genotype_qc_preimputation.output_prefix": "test_array_qc",
+  "genotype_qc_preimputation.output_prefix": "array_qc",
 
-  "genotype_qc_preimputation.ped_file": "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/data/affy_500k_hg19.ped",
-  "genotype_qc_preimputation.map_file": "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/data/affy_500k_hg19.map",
+  "genotype_qc_preimputation.ped_file": "/path/to/affy_500k_hg19.ped",
+  "genotype_qc_preimputation.map_file": "/path/to/affy_500k_hg19.map",
 
-  "genotype_qc_preimputation.ld_regions":         "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/data/high-LD-regions.txt",
-  "genotype_qc_preimputation.handle_duplicates_r":       "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/src/handle_duplicates.R",
-  "genotype_qc_preimputation.check_heterozygosity_r":    "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/src/check_heterozygosity_rate.R",
-  "genotype_qc_preimputation.heterozygosity_outliers_r": "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/src/heterozygosity_outliers_list.R",
-  "genotype_qc_preimputation.threshold_plot_r": "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/src/threshold_plot.R",
-  "genotype_qc_preimputation.pca_plot_r": "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/src/pca_plot.R",
-  "genotype_qc_preimputation.maf_plot_r":    "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/src/maf_plot.R",
+  
+  "genotype_qc_preimputation.handle_duplicates_r":       "/path/to/genotype-qc-pipeline/src/handle_duplicates.R",
+  "genotype_qc_preimputation.check_heterozygosity_r":    "/path/to/genotype-qc-pipeline/src/check_heterozygosity_rate.R",
+  "genotype_qc_preimputation.heterozygosity_outliers_r": "/path/to/genotype-qc-pipeline/src/heterozygosity_outliers_list.R",
+  "genotype_qc_preimputation.threshold_plot_r": "/path/to/genotype-qc-pipeline/src/threshold_plot.R",
+  "genotype_qc_preimputation.pca_plot_r": "/path/to/genotype-qc-pipeline/src/pca_plot.R",
+  "genotype_qc_preimputation.maf_plot_r":    "/path/to/genotype-qc-pipeline/src/maf_plot.R",
+  "genotype_qc_preimputation.check_bim_pl":       "/path/to/genotype-qc-pipeline/src/HRC-1000G-check-bim.pl",
 
-  "genotype_qc_preimputation.check_bim_pl":       "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/src/HRC-1000G-check-bim.pl",
-  "genotype_qc_preimputation.hrc_ref_freq":    "/Users/gwo/project/UCLhg-ARC/Projects/genotype-qc-pipeline/data/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz",
+  "genotype_qc_preimputation.ld_regions":         "/path/to/high-LD-regions.txt",
+  "genotype_qc_preimputation.hrc_ref_freq":    "/path/to/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz",
 
   "genotype_qc_preimputation.plink_bin":   "plink",
-  "genotype_qc_preimputation.plink2_bin":  "/Users/gwo/apps/plink2_mac_arm64_20260311/plink2",
+  "genotype_qc_preimputation.plink2_bin":  "plink2",
   "genotype_qc_preimputation.rscript_bin": "Rscript",
 
   "genotype_qc_preimputation.perl_bin":  "perl",

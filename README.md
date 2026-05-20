@@ -20,14 +20,24 @@ The pipeline follows best practices in the field and utilizes established tools 
 
 # Data and scripts used
 
-1. high-LD-regions.txt: Regions of high LD, from Anderson et al (2010),doi: 10.1038/nprot.2010.116. Link to dataset: https://static-content.springer.com/esm/art%3A10.1038%2Fnprot.2010.116/MediaObjects/41596_2010_BFnprot2010116_MOESM396_ESM.zip
-  - related datasets can be found here
+1. high-LD-regions.txt
+  - Regions of high LD, from Anderson et al (2010),doi: 10.1038/nprot.2010.116. Link to dataset: https://static-content.springer.com/esm/art%3A10.1038%2Fnprot.2010.116/MediaObjects/41596_2010_BFnprot2010116_MOESM396_ESM.zip
+  - Regions of high LD, from Syed et al (2025), doi: 10.1101/2025.11.25.690541. Link to dataset:
     https://github.com/meyer-lab-cshl/plinkQC/blob/master/inst/extdata/high-LD-regions-hg19-GRCh37.txt
-    https://dougspeed.com/high-ld-regions/
+  - Regions of high LD,   https://dougspeed.com/high-ld-regions/
 2. Hetrozygosity check R scripts: `check_heterozygosity_rate.R` and `heterozygosity_outliers_list.R` from GWAS tutorial Marees et al (2018), doi: 10.1002/mpr.1608
 3. Script by Will Rayner for pre-imputation checks (strand alignment, allele frequency checks, etc.), version 4.3: https://www.chg.ox.ac.uk/~wrayner/tools/HRC-1000G-check-bim-v4.3.0.zip
 4. HRC r1.1 GRCh37 reference frequency file. Download: ftp://ngs.sanger.ac.uk/production/hrc/HRC.r1-1/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz
 
+
+There is a download helper script `src/download_resources.sh` that downloads the high-LD-regions and HRC reference frequency files to the current working directory:
+
+```bash
+cd ref/  # or wherever you want the files
+bash ../src/download_resources.sh
+```
+
+ 
 # Run pipeline
 
 ```{bash}

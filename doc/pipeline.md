@@ -109,11 +109,11 @@ biased by correlated markers. The same list is useful for PCA.
 
 High-LD genomic regions (e.g. the MHC locus on chr 6, the chr 8 inversion)
 are excluded before pruning so they do not dominate the independent SNP set.
-The exclusion list is supplied via the `ld_regions` input file. The file
-bundled with this pipeline (`ref/high-LD-regions.txt`) is the hg19/GRCh37
-region list from the supplementary data of Anderson et al. (2010) at https://static-content.springer.com/esm/art%3A10.1038%2Fnprot.2010.116/MediaObjects/41596_2010_BFnprot2010116_MOESM396_ESM.zip. If your data are
-aligned to a different genome build, supply the appropriate coordinates
-instead.
+The exclusion list is supplied via the `ld_regions` input file. The hg19/GRCh37
+region list can be downloaded using the helper script above. The original
+data were compiled by Anderson et al. (2010) and are maintained in the
+plinkQC package by Syed et al. (2025). If your data are aligned to a different
+genome build, supply the appropriate coordinates instead.
 
 ### Step 7 — Heterozygosity check
 Using the LD-pruned SNPs, per-sample heterozygosity rates are computed.
@@ -180,11 +180,23 @@ If your data are on GRCh38, you can use the HRC reference files lifted over to G
 
 ### Required files
 
+
+
+### Input genotype files
+
+Set either the binary PLINK files (`bed_file`, `bim_file`, `fam_file`) or the text PLINK files (`ped_file`, `map_file`) as input in the JSON configuration. 
+
 | Input | Description |
 |---|---|
 | `bed_file`, `bim_file`, `fam_file` | PLINK binary genotype files **(or)** |
 | `ped_file`, `map_file` | PLINK text genotype files |
-| `ld_regions` | High-LD genomic regions to exclude from LD pruning. The file bundled with this pipeline (`ref/high-LD-regions.txt`) lists hg19/GRCh37 coordinates from Anderson et al. (2010). Replace with hg38 coordinates if your data use GRCh38. |
+
+#### Accessory scripts
+
+The pipeline uses several R and Perl scripts for various QC steps. These are included in the `scripts/` directory and referenced in the configuration JSON file.
+
+| Script | Description |
+|---|---|
 | `handle_duplicates_r` | R script to resolve duplicate sample IDs |
 | `check_heterozygosity_r` | R script to compute heterozygosity rates |
 | `heterozygosity_outliers_r` | R script to flag heterozygosity outliers |
@@ -192,7 +204,22 @@ If your data are on GRCh38, you can use the HRC reference files lifted over to G
 | `maf_plot_r` | R script to plot MAF distribution |
 | `pca_plot_r` | R script to plot PCA results |
 | `check_bim_pl` | Will Rayner's `HRC-1000G-check-bim.pl` script |
+
+
+#### Accessory files
+
+The pipeline also requires some reference files for certain steps, which are not included in the repository. Use the helper script below to download these files:
+
+```bash
+bash src/download_resources.bash
+```
+
+| Dataset | Description |
+|---|---|
+| `ld_regions` | High-LD genomic regions to exclude from LD pruning. The file `high-LD-regions-hg19-GRCh37.txt` lists hg19/GRCh37 coordinates from Syed et al. (2025). Replace with hg38 coordinates if your data use GRCh38. |
 | `hrc_ref_freq` | HRC r1.1 GRCh37 reference frequency file |
+
+**Note:** You need to make sure that the files are compatible with your input data. For example, chromosomes need to be in the same format (e.g. "chr1" vs "1") across the input dataset.
 
 ### Tool paths
 
@@ -340,21 +367,23 @@ Option 3: Manual install:
 
 ### 2. Create an inputs JSON file
 
+This is just a partial example of the JSON configuration file. For a full list of inputs, see `config/genotype_qc_preimputation.wdl`. Set the paths to your input genotype files, the accessory scripts, and the reference datasets as needed. **Note**: Instead of plink formatted bed/bim/fam files, you can also input ped/map files as "genotype_qc_preimputation.ped_file" and "genotype_qc_preimputation.map_file". The pipeline will convert them to binary format in the first step.
+
 ```json
 {
-  "genotype_qc_preimputation.bed_file":                  "data/myStudy.bed",
-  "genotype_qc_preimputation.bim_file":                  "data/myStudy.bim",
-  "genotype_qc_preimputation.fam_file":                  "data/myStudy.fam",
+  "genotype_qc_preimputation.bed_file":                  "/path/to/myStudy.bed",
+  "genotype_qc_preimputation.bim_file":                  "/path/to/myStudy.bim",
+  "genotype_qc_preimputation.fam_file":                  "/path/to/myStudy.fam",
   "genotype_qc_preimputation.output_prefix":             "myStudy",
-  "genotype_qc_preimputation.ld_regions":                "ref/high-LD-regions.txt",
-  "genotype_qc_preimputation.handle_duplicates_r":       "scripts/handle_duplicates.R",
-  "genotype_qc_preimputation.check_heterozygosity_r":    "scripts/check_heterozygosity_rate.R",
-  "genotype_qc_preimputation.heterozygosity_outliers_r": "scripts/heterozygosity_outliers_list.R",
-  "genotype_qc_preimputation.threshold_plot_r":          "scripts/threshold_plot.R",
-  "genotype_qc_preimputation.maf_plot_r":                "scripts/maf_plot.R",
-  "genotype_qc_preimputation.pca_plot_r":                "scripts/pca_plot.R",
-  "genotype_qc_preimputation.check_bim_pl":              "ref/HRC-1000G-check-bim.pl",
-  "genotype_qc_preimputation.hrc_ref_freq":              "ref/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz",
+  "genotype_qc_preimputation.ld_regions":                "/path/to/high-LD-regions.txt",
+  "genotype_qc_preimputation.handle_duplicates_r":       "path/to/handle_duplicates.R",
+  "genotype_qc_preimputation.check_heterozygosity_r":    "/path/to/check_heterozygosity_rate.R",
+  "genotype_qc_preimputation.heterozygosity_outliers_r": "/path/to/heterozygosity_outliers_list.R",
+  "genotype_qc_preimputation.threshold_plot_r":          "/path/to/threshold_plot.R",
+  "genotype_qc_preimputation.maf_plot_r":                "/path/to/maf_plot.R",
+  "genotype_qc_preimputation.pca_plot_r":                "/path/to/pca_plot.R",
+  "genotype_qc_preimputation.check_bim_pl":              "/path/to//HRC-1000G-check-bim.pl",
+  "genotype_qc_preimputation.hrc_ref_freq":              "/path/to/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz",
   "genotype_qc_preimputation.geno_threshold":            0.05,
   "genotype_qc_preimputation.mind_threshold":            0.05,
   "genotype_qc_preimputation.hwe_pvalue":                1e-6,
@@ -548,3 +577,6 @@ Marees AT et al. (2018). A tutorial on conducting genome-wide association
 studies: Quality control and statistical analysis. International Journal of
 Methods in Psychiatric Research 27, e1608.  
 https://doi.org/10.1002/mpr.1608
+
+Syed H et al. (2025). plinkQC: quality control of genetic datasets.  
+https://doi.org/10.1101/2025.11.25.690541
