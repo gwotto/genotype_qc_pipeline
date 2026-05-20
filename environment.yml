@@ -1,4 +1,4 @@
-name: genotype-qc
+name: genotype_qc
 channels:
   - bioconda
   - conda-forge
