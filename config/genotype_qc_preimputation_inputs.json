@@ -27,7 +27,7 @@
   "genotype_qc_preimputation.tabix_bin":  "tabix",
 
   "genotype_qc_preimputation.geno_threshold": 0.03,
-  "genotype_qc_preimputation.mind_threshold": 0.02,
+  "genotype_qc_preimputation.mind_threshold": 0.05,
   "genotype_qc_preimputation.hwe_pvalue":     0.000001,
   "genotype_qc_preimputation.ld_r2":          0.1,
   "genotype_qc_preimputation.ld_window_kb":   50,

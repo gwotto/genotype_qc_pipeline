@@ -11,6 +11,7 @@ dependencies:
   - r-dplyr
   - r-tidyr
   - r-readr
+  - r-patchwork
   - perl
   - bcftools>=1.17
   - htslib>=1.17       # provides bgzip and tabix
