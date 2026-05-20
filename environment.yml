@@ -5,7 +5,7 @@ channels:
   - defaults
 dependencies:
   - plink=1.90b6
-  - plink2>=2.0
+  - plink2
   - r-base>=4.0
   - r-ggplot2
   - r-dplyr

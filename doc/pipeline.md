@@ -219,6 +219,8 @@ bash src/download_resources.bash
 | `ld_regions` | High-LD genomic regions to exclude from LD pruning. The file `high-LD-regions-hg19-GRCh37.txt` lists hg19/GRCh37 coordinates from Syed et al. (2025). Replace with hg38 coordinates if your data use GRCh38. |
 | `hrc_ref_freq` | HRC r1.1 GRCh37 reference frequency file |
 
+The ld_regions file needs to be in the format used by plink's `--exclude range` option, with columns: chromosome, start, end.
+
 **Note:** You need to make sure that the files are compatible with your input data. For example, chromosomes need to be in the same format (e.g. "chr1" vs "1") across the input dataset.
 
 ### Tool paths
@@ -384,7 +386,7 @@ This is just a partial example of the JSON configuration file. For a full list o
   "genotype_qc_preimputation.pca_plot_r":                "/path/to/pca_plot.R",
   "genotype_qc_preimputation.check_bim_pl":              "/path/to//HRC-1000G-check-bim.pl",
   "genotype_qc_preimputation.hrc_ref_freq":              "/path/to/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz",
-  "genotype_qc_preimputation.geno_threshold":            0.05,
+  "genotype_qc_preimputation.geno_threshold":            0.03,
   "genotype_qc_preimputation.mind_threshold":            0.05,
   "genotype_qc_preimputation.hwe_pvalue":                1e-6,
   "genotype_qc_preimputation.maf_threshold":             0.01,
