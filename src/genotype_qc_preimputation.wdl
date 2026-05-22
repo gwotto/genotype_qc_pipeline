@@ -239,11 +239,23 @@ workflow genotype_qc_preimputation {
                 fam_file = RemoveSexFails.out_fam,
                 label    = "Step 3   Sex check"
         }
+
+        # Report variants per chromosome after sex check
+        call VariantsPerChromosome as VariantsAfterSexCheck {
+            input:
+                bim_file = RemoveSexFails.out_bim,
+                label    = "         Sex check - variants per chromosome"
+        }
     }
 
     String sex_check_log_line = select_first([
         LogSexCheck.line,
         "Step 3   Sex check                            [skipped - no X SNPs]"
+    ])
+
+    String sex_check_chr_line = select_first([
+        VariantsAfterSexCheck.log_line,
+        "         Sex check - variants per chromosome  [skipped - no X SNPs]"
     ])
 
 
@@ -442,6 +454,14 @@ String relatedness_log_line = select_first([
     # allele frequency differences vs the reference.
     # Outputs per-chromosome VCF files ready for upload to the TOPMed
     # imputation server (https://imputation.biodatacatalyst.nhlbi.nih.gov).
+    
+    # Report final per-chromosome variant counts before imputation prep
+    call VariantsPerChromosome as FinalVariantsPerChromosome {
+        input:
+            bim_file = select_first([RemoveRelated.out_bim, AutosomeFilter.out_bim]),
+            label    = "Step 10b Variants per chromosome (pre-imputation)"
+    }
+
     call PrepareForImputation {
         input:
             bed_file        = select_first([RemoveRelated.out_bed, AutosomeFilter.out_bed]),
@@ -465,12 +485,14 @@ String relatedness_log_line = select_first([
         LogStep1.line,
         LogStep2.line,
         sex_check_log_line,
+        sex_check_chr_line,
         LogStep4.line,
         LogStep5.line,
         LdPruning.log_line,
         LogStep7.line,
         LogStep8.line,
         relatedness_log_line,
+        FinalVariantsPerChromosome.log_line,
         PrepareForImputation.log_line
     ]
 
@@ -494,6 +516,7 @@ String relatedness_log_line = select_first([
         # Sex check outputs (only present if X-chromosome SNPs exist)
         File? sexcheck_report = SexCheck.sexcheck_report
         File? problem_samples = SexCheck.problem_samples
+        File? variants_per_chr_after_sexcheck = VariantsAfterSexCheck.report
 
         # Heterozygosity check outputs
         File het_check_report = HeterozygosityCheck.r_check_het  # Per-sample het rates
@@ -516,6 +539,9 @@ String relatedness_log_line = select_first([
         File pca_eigenvec  = PCA.eigenvec   # PC scores per sample
         File pca_eigenval  = PCA.eigenval   # Variance explained per PC
         File pca_plot      = PCA.pca_plot   # Scatter plots of PCs
+
+        # Per-chromosome variant counts (diagnostic — validates chromosome coding)
+        File variants_per_chr_final = FinalVariantsPerChromosome.report
 
         # Imputation-ready VCFs — upload these to the TOPMed server
         Array[File] imputation_vcfs     = PrepareForImputation.vcf_gz
@@ -732,13 +758,17 @@ task RemoveSamples {
 ## CountXSNPs
 ## Counts the number of X-chromosome SNPs in a .bim file.
 ## Used as a guard: sex check is only meaningful when X SNPs are present.
+## Compatible with both chrX and chr23 chromosome coding formats.
 ## -----------------------------------------------------------------------------
 task CountXSNPs {
     input {
         File bim_file   # PLINK .bim — chromosome is column 1
     }
     command <<<
-        awk '$1=="X"{print}' ~{bim_file} | wc -l > x_count.txt
+        # Count X-chromosome SNPs in both old (X) and new (23) notation
+        x_old=$(awk '$1=="X"{print}' ~{bim_file} | wc -l)
+        x_new=$(awk '$1=="23"{print}' ~{bim_file} | wc -l)
+        echo $((x_old + x_new)) > x_count.txt
     >>>
     output {
         Int n_x_snps = read_int("x_count.txt")
@@ -747,9 +777,95 @@ task CountXSNPs {
 }
 
 ## -----------------------------------------------------------------------------
+## VariantsPerChromosome
+## Counts and reports the number of variants per chromosome.
+## Recognizes both PLINK1 (1-22, X, Y, MT) and PLINK2 (1-22, 23, 24, 25, 26) 
+## chromosome coding schemes.
+##
+## Output includes:
+##   - A formatted report of variants per chromosome
+##   - Separate counts for autosomes, sex chromosomes, and mitochondrial DNA
+##   - A single-line summary for the pipeline log
+## -----------------------------------------------------------------------------
+task VariantsPerChromosome {
+    input {
+        File   bim_file
+        String label    # Step label for the log line
+    }
+    command <<<
+        set -euo pipefail
+        
+        # Initialize counters
+        > variants_per_chr_report.txt
+        
+        # Count variants per autosome (1-22 or 1-22 in any coding)
+        total_autosomes=0
+        for CHR in {1..22}; do
+            count=$(awk -v chr="$CHR" '$1==chr' ~{bim_file} | wc -l)
+            if [ $count -gt 0 ]; then
+                printf "  Autosome %2d:  %8d variants\n" "$CHR" "$count" >> variants_per_chr_report.txt
+                total_autosomes=$((total_autosomes + count))
+            fi
+        done
+        
+        # Count sex chromosomes (both old and new notations)
+        x_plink1=$(awk '$1=="X"' ~{bim_file} | wc -l)
+        x_plink2=$(awk '$1=="23"' ~{bim_file} | wc -l)
+        x_total=$((x_plink1 + x_plink2))
+        
+        y_plink1=$(awk '$1=="Y"' ~{bim_file} | wc -l)
+        y_plink2=$(awk '$1=="24"' ~{bim_file} | wc -l)
+        y_total=$((y_plink1 + y_plink2))
+        
+        # Pseudoautosomal region (PLINK2 only)
+        xy_plink2=$(awk '$1=="25"' ~{bim_file} | wc -l)
+        
+        # Mitochondrial DNA
+        mt_plink1=$(awk '$1=="MT"' ~{bim_file} | wc -l)
+        mt_plink2=$(awk '$1=="26"' ~{bim_file} | wc -l)
+        mt_total=$((mt_plink1 + mt_plink2))
+        
+        # Report sex chromosomes
+        if [ $x_total -gt 0 ]; then
+            printf "  X chromosome:  %8d variants\n" "$x_total" >> variants_per_chr_report.txt
+        fi
+        
+        if [ $y_total -gt 0 ]; then
+            printf "  Y chromosome:  %8d variants\n" "$y_total" >> variants_per_chr_report.txt
+        fi
+        
+        if [ $xy_plink2 -gt 0 ]; then
+            printf "  PAR (XY):       %8d variants\n" "$xy_plink2" >> variants_per_chr_report.txt
+        fi
+        
+        if [ $mt_total -gt 0 ]; then
+            printf "  Mitochondrial:  %8d variants\n" "$mt_total" >> variants_per_chr_report.txt
+        fi
+        
+        # Compute total variants and format log line
+        total_variants=$((total_autosomes + x_total + y_total + xy_plink2 + mt_total))
+        printf "%-42s  Total: %8d variants\n" \
+            "~{label}" "$total_variants" >> variants_per_chr_report.txt
+        
+        # Create a concise single-line summary for the pipeline log
+        printf "%-42s  Total: %8d variants (A:%d X:%d Y:%d MT:%d)\n" \
+            "~{label}" "$total_variants" "$total_autosomes" "$x_total" "$y_total" "$mt_total" \
+            > log_line.txt
+    >>>
+    output {
+        File report = "variants_per_chr_report.txt"
+        String log_line = read_string("log_line.txt")
+    }
+    runtime { maxRetries: 1 }
+}
+
+## -----------------------------------------------------------------------------
 ## SexCheck
 ## Runs PLINK --check-sex to compare reported sex with X-chromosome F-statistic.
 ## Writes a list of discordant samples (status != "OK") for removal.
+## Aware of chromosome coding: recognizes both X (PLINK1) and 23 (PLINK2) as 
+## the sex chromosome for F-stat calculation.
+## Outputs problem samples with annotated chromosome information.
 ## -----------------------------------------------------------------------------
 task SexCheck {
     input {
@@ -771,9 +887,28 @@ task SexCheck {
         # Extract FID and IID of samples that failed (status column != "OK")
         awk '$5 != "OK" {print $1, $2}' ~{output_prefix}_sexcheck.sexcheck \
             > ~{output_prefix}_problem_samples.txt
+
+        # Check which sex chromosome coding was used and annotate report
+        x_count_old=$(awk '$1=="X"' ~{bim_file} | wc -l)
+        x_count_new=$(awk '$1=="23"' ~{bim_file} | wc -l)
+        
+        if [ $x_count_new -gt 0 ]; then
+            CHR_CODING="PLINK2 (chr 23=X)"
+        else
+            CHR_CODING="PLINK1 (chr X)"
+        fi
+        
+        # Add chromosome coding annotation to the report
+        {
+            printf "## Sex check report (chromosome coding: %s)\n" "$CHR_CODING"
+            printf "## Run on X-chromosome variants: %d SNPs\n" "$((x_count_old + x_count_new))"
+            printf "## Samples with status != OK are flagged as discordant\n"
+            printf "\n"
+            cat ~{output_prefix}_sexcheck.sexcheck
+        } > ~{output_prefix}_sexcheck_annotated.sexcheck
     >>>
     output {
-        File sexcheck_report = "~{output_prefix}_sexcheck.sexcheck"   # Full PLINK report
+        File sexcheck_report = "~{output_prefix}_sexcheck_annotated.sexcheck"   # Annotated report with chr coding
         File problem_samples = "~{output_prefix}_problem_samples.txt" # FID IID of failures
         File log             = "~{output_prefix}_sexcheck.log"
     }
