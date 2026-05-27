@@ -1,44 +1,32 @@
 graph TD
-    A["Input VCF/PLINK"] --> B["Convert to PLINK Binary"]
-    B --> C["Remove Duplicate IDs"]
-    C --> D["SNP Missingness Filter<br/>--geno 0.05"]
-    D --> E["Sample Missingness Filter<br/>--mind 0.1"]
-    E --> E2["Variants per Chromosome<br/>report after sample filtering"]
-    E2 --> F{"Sex Check<br/>chr 23 (X) SNPs exist?"}
-    F -->|Yes| G["Sex Check & Removal<br/>--check-sex<br/>sex=0 samples retained"]
-    F -->|No| H["Skip Sex Check"]
-    G --> I["MAC Filter<br/>--mac threshold<br/>monomorphic SNPs removed"]
-    H --> I
-    I --> J["HWE Filter<br/>--hwe 1e-6"]
-    J --> K["LD Pruning<br/>--indep-pairwise"]
-    K --> L["Extract LD-Pruned SNPs"]
-    L --> M["Heterozygosity Check"]
-    L --> N{"Relatedness Check<br/>enabled?"}
-    L --> O["PCA Analysis<br/>--pca"]
-    M --> P["Remove Heterozygosity Outliers"]
-    P --> CHR["Chromosome Filter<br/>configurable via chr_args<br/>PLINK2 encoding 1-26"]
-    N -->|Yes| Q["Relatedness Check<br/>KING --rel-cutoff 0.0884"]
-    N -->|No| R["Skip Relatedness Check"]
-    Q --> S["Remove Related Individuals"]
-    CHR --> T["Final QC Dataset"]
-    S --> T
-    R --> T
-    O --> U["PCA Plot<br/>Diagnostic Only"]
-    T --> T2["Variants per Chromosome<br/>report end of pipeline"]
-    T2 --> V{"Output<br/>Format"}
-    V -->|PLINK| W["Final PLINK Binary<br/>for Imputation"]
-    V -->|VCF| X["Per-Chromosome VCF<br/>for TOPMed"]
-    U -.->|Diagnostic| Y["QC Summary Report"]
-    W --> Y
-    X --> Y
+    A["Input PLINK binary"] --> B["Convert to binary\n(optional)"]
+    B --> C["Remove duplicate IDs"]
+    C --> D["SNP missingness filter\n--geno"]
+    D --> E["Sample missingness filter\n--mind"]
+    E --> E2["Variants per chromosome\nreport"]
+    E2 --> F{"Sex check\nchr 23 (X) SNPs present?"}
+    F -->|Yes| G["Sex check & removal\n--check-sex\nsex=0 retained"]
+    F -->|No| SKIP["Skip sex check"]
+    G --> I["MAC filter\n--mac\nmonomorphic SNPs removed"]
+    SKIP --> I
+    I --> J["HWE filter\n--hwe"]
+    J --> K["LD pruning\n--indep-pairwise"]
+    K --> PRUNE["LD-pruned SNP list"]
+    J --> HET["Heterozygosity check\nuses LD-pruned SNPs"]
+    PRUNE --> HET
+    HET --> HETRM["Remove heterozygosity outliers"]
+    HETRM --> CHR["Chromosome filter\nconfigurable via chr_args"]
+    CHR --> REL["Relatedness filter (KING)\nuses LD-pruned SNPs\n(optional)"]
+    PRUNE --> REL
+    CHR --> PCA["PCA\nuses LD-pruned SNPs\ndiagnostic only"]
+    PRUNE --> PCA
+    REL --> VPC["Variants per chromosome\nreport"]
+    VPC --> PREP["Prepare for imputation\nper-chromosome VCFs"]
 
     style A fill:#e1f5ff
-    style W fill:#e1f5ff
-    style X fill:#e1f5ff
-    style Y fill:#e1f5ff
-    style U fill:#fff9c4
-    style O fill:#fff9c4
-    style M fill:#fff9c4
-    style Q fill:#fff9c4
+    style PREP fill:#e1f5ff
+    style PRUNE fill:#f3e5f5
+    style PCA fill:#fff9c4
+    style HET fill:#fff9c4
     style E2 fill:#fff9c4
-    style T2 fill:#fff9c4
+    style VPC fill:#fff9c4
