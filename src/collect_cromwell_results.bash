@@ -15,7 +15,7 @@
 # Output structure:
 #   <output_dir>/genotype_qc_preimputation_YYYY-MM-DD/
 #     qc_dataset/   Final QC'd PLINK files (bed/bim/fam)
-#     plots/        PNG plots (MAF, heterozygosity, PCA)
+#     plots/        PNG plots (MAC, heterozygosity, PCA)
 #     reports/      QC reports (sex check, het, relatedness, freq, logs)
 #     pca/          PCA eigenvectors and eigenvalues
 #     vcfs/         Imputation-ready VCFs per chromosome
@@ -56,11 +56,11 @@ echo "Copying pipeline log..."
 CALL="$BASE/call-WriteLog/execution"
 cp "$CALL"/*_pipeline.log "$OUTDIR/"
 
-# -- Final QC dataset (step 9 - RemoveRelated, or step 8 - AutosomeFilter if relatedness skipped) --
+# -- Final QC dataset (step 9 - RemoveRelated, or step 8 - ChromosomeFilter if relatedness skipped) --
 echo "Copying final QC dataset (PLINK bed/bim/fam)..."
 CALL="$BASE/call-RemoveRelated/execution"
 if [ ! -d "$CALL" ]; then
-    CALL="$BASE/call-AutosomeFilter/execution"
+    CALL="$BASE/call-ChromosomeFilter/execution"
 fi
 cp "$CALL"/*.bed "$CALL"/*.bim "$CALL"/*.fam "$OUTDIR/qc_dataset/"
 
@@ -71,6 +71,8 @@ CALL="$BASE/call-SexCheck/execution"
 [ -d "$CALL" ] && cp "$CALL"/*.sexcheck "$OUTDIR/reports/" 2>/dev/null || true
 CALL="$BASE/call-RemoveSexFails/execution"
 [ -d "$CALL" ] && cp "$CALL"/*.fam "$OUTDIR/reports/sex_fail_samples.fam" 2>/dev/null || true
+CALL="$BASE/call-InitialVariantsPerChromosome/execution"
+[ -d "$CALL" ] && cp "$CALL"/variants_per_chr_report.txt "$OUTDIR/reports/initial_variants_per_chr.txt" 2>/dev/null || true
 
 # -- Heterozygosity report & fail list (step 7 - HetCheck / RemoveHetFails) ---
 echo "Copying heterozygosity reports..."
@@ -80,9 +82,9 @@ cp "$CALL"/*.png "$OUTDIR/plots/" 2>/dev/null || true
 CALL="$BASE/call-RemoveHetFails/execution"
 cp "$CALL"/*.txt "$OUTDIR/reports/het_fail_samples.txt" 2>/dev/null || true
 
-# -- MAF plot & frequency files (step 4 - MafFilter) --------------------------
-echo "Copying MAF plots and frequency files..."
-CALL="$BASE/call-MafFilter/execution"
+# -- MAC plot & frequency files (step 4 - MacFilter) --------------------------
+echo "Copying MAC plots and frequency files..."
+CALL="$BASE/call-MacFilter/execution"
 cp "$CALL"/*.png "$OUTDIR/plots/"
 cp "$CALL"/*.frq "$OUTDIR/reports/"
 
@@ -111,6 +113,10 @@ CALL="$BASE/call-PrepareForImputation/execution"
 cp "$CALL"/*_chr*.vcf.gz     "$OUTDIR/vcfs/"
 cp "$CALL"/*_chr*.vcf.gz.tbi "$OUTDIR/vcfs/"
 cp "$CALL"/check-bim.log     "$OUTDIR/reports/"
+
+# -- Final variants-per-chromosome report (step 10b - FinalVariantsPerChromosome) --
+CALL="$BASE/call-FinalVariantsPerChromosome/execution"
+[ -d "$CALL" ] && cp "$CALL"/variants_per_chr_report.txt "$OUTDIR/reports/final_variants_per_chr.txt" 2>/dev/null || true
 
 # -- Rename output directory with date ----------------------------------------
 # outdir_renamed="${output_dir}_$(date +%Y-%m-%d)"

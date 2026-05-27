@@ -3,10 +3,11 @@ graph TD
     B --> C["Remove Duplicate IDs"]
     C --> D["SNP Missingness Filter<br/>--geno 0.05"]
     D --> E["Sample Missingness Filter<br/>--mind 0.1"]
-    E --> F{"Sex Check<br/>X chromosome<br/>SNPs exist?"}
-    F -->|Yes| G["Sex Check & Removal<br/>--check-sex"]
+    E --> E2["Variants per Chromosome<br/>report after sample filtering"]
+    E2 --> F{"Sex Check<br/>chr 23 (X) SNPs exist?"}
+    F -->|Yes| G["Sex Check & Removal<br/>--check-sex<br/>sex=0 samples retained"]
     F -->|No| H["Skip Sex Check"]
-    G --> I["MAF Filter<br/>--maf 0.01"]
+    G --> I["MAC Filter<br/>--mac threshold<br/>monomorphic SNPs removed"]
     H --> I
     I --> J["HWE Filter<br/>--hwe 1e-6"]
     J --> K["LD Pruning<br/>--indep-pairwise"]
@@ -15,14 +16,16 @@ graph TD
     L --> N{"Relatedness Check<br/>enabled?"}
     L --> O["PCA Analysis<br/>--pca"]
     M --> P["Remove Heterozygosity Outliers"]
-    N -->|Yes| Q["Relatedness Check<br/>--rel-cutoff 0.0884"]
+    P --> CHR["Chromosome Filter<br/>configurable via chr_args<br/>PLINK2 encoding 1-26"]
+    N -->|Yes| Q["Relatedness Check<br/>KING --rel-cutoff 0.0884"]
     N -->|No| R["Skip Relatedness Check"]
     Q --> S["Remove Related Individuals"]
-    P --> T["Final QC Dataset"]
+    CHR --> T["Final QC Dataset"]
     S --> T
     R --> T
     O --> U["PCA Plot<br/>Diagnostic Only"]
-    T --> V{"Output<br/>Format"}
+    T --> T2["Variants per Chromosome<br/>report end of pipeline"]
+    T2 --> V{"Output<br/>Format"}
     V -->|PLINK| W["Final PLINK Binary<br/>for Imputation"]
     V -->|VCF| X["Per-Chromosome VCF<br/>for TOPMed"]
     U -.->|Diagnostic| Y["QC Summary Report"]
@@ -37,4 +40,5 @@ graph TD
     style O fill:#fff9c4
     style M fill:#fff9c4
     style Q fill:#fff9c4
-    
+    style E2 fill:#fff9c4
+    style T2 fill:#fff9c4

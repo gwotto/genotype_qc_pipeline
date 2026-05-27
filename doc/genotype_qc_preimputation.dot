@@ -3,53 +3,58 @@ digraph genotype_qc_preimputation {
   compound=true;
 
   # Links
-  CALL_RemoveRelated -> CALL_PrepareForImputation
-  CALL_LdPruning -> CALL_RelatednessCheck
+  CALL_HeterozygosityCheck -> CALL_RemoveHetFails
   CALL_HandleDuplicates -> CALL_LogStep0b
   CALL_LogStep7 -> CALL_WriteLog
-  CALL_AutosomeFilter -> CALL_RelatednessCheck
   CALL_LogSexCheck -> CALL_WriteLog
+  CALL_RemoveSexFails -> CALL_MacFilter
   CALL_HandleDuplicates -> CALL_ThresholdSweep
   CALL_LdPruning -> CALL_HeterozygosityCheck
   CALL_RemoveSexFails -> CALL_LogSexCheck
-  CALL_GenoFilter -> CALL_LogStep1
+  CALL_LdPruning -> CALL_WriteLog
   CALL_HweFilter -> CALL_LogStep5
   CALL_LogStep9 -> CALL_WriteLog
+  CALL_LogStep0b -> CALL_WriteLog
   CALL_LogStep4 -> CALL_WriteLog
   CALL_HweFilter -> CALL_RemoveHetFails
   CALL_MindFilter -> CALL_SexCheck
+  CALL_RemoveHetFails -> CALL_ChromosomeFilter
+  CALL_RemoveRelated -> CALL_PrepareForImputation
   CALL_MindFilter -> CALL_CountXSNPs
+  CALL_MacFilter -> CALL_HweFilter
   CALL_LdPruning -> CALL_PCA
+  CALL_LdPruning -> CALL_RelatednessCheck
+  CALL_CountXSNPs -> CONDITIONAL_1_EXPRESSION
   CALL_LogStep8 -> CALL_WriteLog
   CALL_LogStep1 -> CALL_WriteLog
   CALL_RemoveRelated -> CALL_PCA
   CALL_MindFilter -> CALL_RemoveSexFails
   CALL_LogStep5 -> CALL_WriteLog
-  CALL_RemoveHetFails -> CALL_AutosomeFilter
-  CALL_CountXSNPs -> CONDITIONAL_2_EXPRESSION
-  CALL_HeterozygosityCheck -> CALL_RemoveHetFails
-  CALL_RemoveSexFails -> CALL_MafFilter
+  CALL_ChromosomeFilter -> CALL_FinalVariantsPerChromosome
+  CALL_MindFilter -> CALL_InitialVariantsPerChromosome
+  CALL_ChromosomeFilter -> CALL_PCA
   CALL_ConvertToBinary -> CALL_HandleDuplicates
   CALL_HandleDuplicates -> CALL_GenoFilter
+  CALL_MacFilter -> CALL_LogStep4
   CALL_MindFilter -> CALL_LogStep2
+  CALL_ChromosomeFilter -> CALL_LogStep8
+  CALL_ChromosomeFilter -> CALL_PrepareForImputation
+  CALL_ChromosomeFilter -> CALL_RemoveRelated
+  CALL_MindFilter -> CALL_MacFilter
   CALL_HweFilter -> CALL_LdPruning
   CALL_RelatednessCheck -> CALL_RemoveRelated
   CALL_GenoFilter -> CALL_MindFilter
-  CALL_AutosomeFilter -> CALL_RemoveRelated
-  CALL_MafFilter -> CALL_HweFilter
+  CALL_InitialVariantsPerChromosome -> CALL_WriteLog
+  CALL_FinalVariantsPerChromosome -> CALL_WriteLog
   CALL_HweFilter -> CALL_HeterozygosityCheck
-  CALL_AutosomeFilter -> CALL_PrepareForImputation
   CALL_SexCheck -> CALL_RemoveSexFails
-  CALL_AutosomeFilter -> CALL_PCA
+  CALL_RemoveRelated -> CALL_FinalVariantsPerChromosome
   CALL_RemoveRelated -> CALL_LogStep9
+  CALL_GenoFilter -> CALL_LogStep1
+  CALL_ChromosomeFilter -> CALL_RelatednessCheck
   CALL_PrepareForImputation -> CALL_WriteLog
   CALL_RemoveHetFails -> CALL_LogStep7
   CALL_LogStep2 -> CALL_WriteLog
-  CALL_MafFilter -> CALL_LogStep4
-  CALL_LdPruning -> CALL_WriteLog
-  CALL_LogStep0b -> CALL_WriteLog
-  CALL_AutosomeFilter -> CALL_LogStep8
-  CALL_MindFilter -> CALL_MafFilter
 
   # Nodes
   subgraph cluster_0 {
@@ -60,30 +65,28 @@ digraph genotype_qc_preimputation {
     CALL_LogStep9 [label="call LogStep9"]
     CONDITIONAL_0_EXPRESSION [shape="hexagon" label="if (run_relatedness_check)" style="dashed" ]
   }
+  CALL_WriteLog [label="call WriteLog"]
   subgraph cluster_2 {
+    style="filled,dashed";
+    fillcolor=white;
+    CALL_ConvertToBinary [label="call ConvertToBinary"]
+    CONDITIONAL_2_EXPRESSION [shape="hexagon" label="if (!(defined(bed_file)))" style="dashed" ]
+  }
+  subgraph cluster_1 {
     style="filled,dashed";
     fillcolor=white;
     CALL_LogSexCheck [label="call LogSexCheck"]
     CALL_SexCheck [label="call SexCheck"]
     CALL_RemoveSexFails [label="call RemoveSexFails"]
-    CONDITIONAL_2_EXPRESSION [shape="hexagon" label="if (has_x_snps)" style="dashed" ]
-  }
-  CALL_WriteLog [label="call WriteLog"]
-  subgraph cluster_1 {
-    style="filled,dashed";
-    fillcolor=white;
-    CALL_ConvertToBinary [label="call ConvertToBinary"]
-    CONDITIONAL_1_EXPRESSION [shape="hexagon" label="if (!(defined(bed_file)))" style="dashed" ]
+    CONDITIONAL_1_EXPRESSION [shape="hexagon" label="if (has_x_snps)" style="dashed" ]
   }
   CALL_LdPruning [label="call LdPruning"]
-  CALL_AutosomeFilter [label="call AutosomeFilter"]
   CALL_MindFilter [label="call MindFilter"]
   CALL_LogStep5 [label="call LogStep5"]
+  CALL_FinalVariantsPerChromosome [label="call FinalVariantsPerChromosome"]
   CALL_RemoveHetFails [label="call RemoveHetFails"]
-  CALL_GenoFilter [label="call GenoFilter"]
   CALL_PCA [label="call PCA"]
   CALL_LogStep2 [label="call LogStep2"]
-  CALL_MafFilter [label="call MafFilter"]
   CALL_CountXSNPs [label="call CountXSNPs"]
   CALL_LogStep0b [label="call LogStep0b"]
   CALL_ThresholdSweep [label="call ThresholdSweep"]
@@ -92,7 +95,11 @@ digraph genotype_qc_preimputation {
   CALL_HeterozygosityCheck [label="call HeterozygosityCheck"]
   CALL_LogStep1 [label="call LogStep1"]
   CALL_LogStep8 [label="call LogStep8"]
+  CALL_MacFilter [label="call MacFilter"]
   CALL_HandleDuplicates [label="call HandleDuplicates"]
+  CALL_InitialVariantsPerChromosome [label="call InitialVariantsPerChromosome"]
+  CALL_GenoFilter [label="call GenoFilter"]
+  CALL_ChromosomeFilter [label="call ChromosomeFilter"]
   CALL_PrepareForImputation [label="call PrepareForImputation"]
   CALL_HweFilter [label="call HweFilter"]
 }

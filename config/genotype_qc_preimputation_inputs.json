@@ -2,17 +2,17 @@
   
   "genotype_qc_preimputation.output_prefix": "array_qc",
 
-  "genotype_qc_preimputation.ped_file": "/path/to/affy_500k_hg19.ped",
-  "genotype_qc_preimputation.map_file": "/path/to/affy_500k_hg19.map",
+  "genotype_qc_preimputation.ped_file": "/path/to/array.ped",
+  "genotype_qc_preimputation.map_file": "/path/to/array.map",
 
   
-  "genotype_qc_preimputation.handle_duplicates_r":       "/path/to/genotype-qc-pipeline/src/handle_duplicates.R",
-  "genotype_qc_preimputation.check_heterozygosity_r":    "/path/to/genotype-qc-pipeline/src/check_heterozygosity_rate.R",
-  "genotype_qc_preimputation.heterozygosity_outliers_r": "/path/to/genotype-qc-pipeline/src/heterozygosity_outliers_list.R",
-  "genotype_qc_preimputation.threshold_plot_r": "/path/to/genotype-qc-pipeline/src/threshold_plot.R",
-  "genotype_qc_preimputation.pca_plot_r": "/path/to/genotype-qc-pipeline/src/pca_plot.R",
-  "genotype_qc_preimputation.maf_plot_r":    "/path/to/genotype-qc-pipeline/src/maf_plot.R",
-  "genotype_qc_preimputation.check_bim_pl":       "/path/to/genotype-qc-pipeline/src/HRC-1000G-check-bim.pl",
+  "genotype_qc_preimputation.handle_duplicates_r":       "/path/to/genotype_qc_pipeline/src/handle_duplicates.R",
+  "genotype_qc_preimputation.check_heterozygosity_r":    "/path/to/genotype_qc_pipeline/src/check_heterozygosity_rate.R",
+  "genotype_qc_preimputation.heterozygosity_outliers_r": "/path/to/genotype_qc_pipeline/src/heterozygosity_outliers_list.R",
+  "genotype_qc_preimputation.threshold_plot_r": "/path/to/genotype_qc_pipeline/src/threshold_plot.R",
+  "genotype_qc_preimputation.pca_plot_r": "/path/to/genotype_qc_pipeline/src/pca_plot.R",
+  "genotype_qc_preimputation.mac_plot_r":    "/path/to/genotype_qc_pipeline/src/mac_plot.R",
+  "genotype_qc_preimputation.check_bim_pl":       "/path/to/genotype_qc_pipeline/src/HRC-1000G-check-bim.pl",
 
   "genotype_qc_preimputation.ld_regions":         "/path/to/high-LD-regions.txt",
   "genotype_qc_preimputation.hrc_ref_freq":    "/path/to/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz",
@@ -36,5 +36,6 @@
   "genotype_qc_preimputation.king_cutoff":    0.0884,
   "genotype_qc_preimputation.run_relatedness_check": true,
   "genotype_qc_preimputation.n_pcs":          10,
-  "genotype_qc_preimputation.maf_threshold": 0.001
+  "genotype_qc_preimputation.mac_threshold":  50,
+  "genotype_qc_preimputation.chr_args": "--chr 1-23"
 }

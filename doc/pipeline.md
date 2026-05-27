@@ -17,14 +17,17 @@ Input genotypes (bed/bim/fam or ped/map)
     ├─ Step 0b : Remove duplicate sample IDs
     ├─ Step 1  : Remove low-quality SNPs      --geno (missingness per SNP)
     ├─ Step 2  : Remove low-quality samples   --mind (missingness per sample)
+    ├─ Step 2b : Variants per chromosome      report after sample filtering
     ├─ Step 3  : Sex check                    flag sample swaps / genotyping errors
-    ├─ Step 4  : MAF filter                   remove monomorphic & rare SNPs
+    │                                         (samples with unknown sex retained)
+    ├─ Step 4  : MAC filter                   remove monomorphic & rare SNPs
     ├─ Step 5  : Hardy-Weinberg filter        remove SNPs that fail equilibrium test
     ├─ Step 6  : LD pruning                   select independent SNPs (used in steps 7 & 9)
     ├─ Step 7  : Heterozygosity filter        remove contaminated / inbred samples
-    ├─ Step 8  : Restrict to autosomes        chromosomes 1–22 only
+    ├─ Step 8  : Chromosome filter            configurable via chr_args (e.g. --chr 1-22)
     ├─ Step 9  : Relatedness filter           remove one of each related pair (optional)
     ├─ Step 10 : PCA                          diagnostic population structure check
+    ├─ Step 10b: Variants per chromosome      report at end of pipeline
     └─ Step 11 : Prepare for imputation       strand-align and export per-chr VCFs
                                                     │
                                               Final QC dataset
@@ -65,23 +68,27 @@ Highly missing samples reflect poor DNA quality or plate failures.
 ### Step 3 — Sex check
 PLINK uses X-chromosome heterozygosity to infer biological sex and compares
 it to the reported sex in the `.fam` file. Discordant samples are removed —
-they likely represent sample swaps or labelling errors.  
-Skipped automatically if the dataset has no X-chromosome SNPs.
+they likely represent sample swaps or labelling errors. Samples with unknown
+sex (coded as `0` in the `.fam` file) are retained, as their sex may be
+legitimately missing rather than erroneous.  
+Skipped automatically if the dataset has no X-chromosome SNPs (chromosome 23
+in PLINK2 encoding).
 
-### Step 4 — MAF filter
-Removes monomorphic SNPs (MAF = 0) and SNPs below `maf_threshold`.
-Monomorphic SNPs carry no association signal and can cause numerical issues
-in downstream analyses. A typical pre-imputation threshold is 1%
-(`maf_threshold = 0.01`). MAF filtering should be repeated after imputation
-on the imputed dataset.
+### Step 4 — MAC filter
+Removes monomorphic SNPs (MAC = 0) and SNPs below `mac_threshold` (minor
+allele count). Monomorphic SNPs carry no association signal and can cause
+numerical issues in downstream analyses. A typical pre-imputation threshold
+is 50 observations (`mac_threshold = 50`), which is more robust than a fixed
+frequency threshold because it accounts for the actual sample size. MAC
+filtering should be repeated after imputation on the imputed dataset.
 
 This step is placed before HWE testing and LD pruning for two reasons:
 - HWE tests are unreliable for rare variants due to low expected counts;
-  applying the MAF filter first means HWE is tested only where it has power.
+  applying the MAC filter first means HWE is tested only where it has power.
 - LD pruning and heterozygosity checks are more stable when based on common
   variants only.
 
-An R script produces a MAF distribution plot and a before/after barplot for
+An R script produces a MAC distribution plot and a before/after barplot for
 quality inspection. The frequency files (`maf_freq_before`, `maf_freq_after`)
 are QC diagnostics; the allele frequency file used for imputation strand
 alignment (step 11) is computed separately on the final post-relatedness
@@ -126,9 +133,27 @@ The R scripts for this step (`check_heterozygosity_rate.R` and
 `heterozygosity_outliers_list.R`) are taken from the practical GWAS tutorial
 by Marees et al. (2018).
 
-### Step 8 — Autosome filter
-Retains only chromosomes 1–22. Sex chromosomes and mitochondrial variants
-require specialised handling not included in this standard GWAS QC workflow.
+### Step 8 — Chromosome filter
+Retains only the chromosomes specified via the `chr_args` parameter in the
+configuration file (e.g. `"--chr 1-22"` to retain autosomes only). This
+allows the pipeline to handle different use cases, for example retaining
+sex chromosomes (23, 24) or the pseudoautosomal region (25) alongside
+autosomes.
+
+The pipeline uses PLINK2 chromosome encoding throughout:
+
+| Chromosome | PLINK2 code |
+|---|---|
+| Autosomes | 1-22 |
+| X | 23 |
+| Y | 24 |
+| PAR (XY) | 25 |
+| Mitochondrial | 26 |
+
+Sex chromosomes and mitochondrial variants may require specialised handling
+not included in this standard GWAS QC workflow. If they are retained via
+`chr_args`, inspect the per-chromosome variant counts in the pipeline log
+carefully.
 
 ### Step 9 — Relatedness filtering *(optional)*
 Cryptically related individuals (e.g. undisclosed family members, sample
@@ -201,7 +226,7 @@ The pipeline uses several R and Perl scripts for various QC steps. These are inc
 | `check_heterozygosity_r` | R script to compute heterozygosity rates |
 | `heterozygosity_outliers_r` | R script to flag heterozygosity outliers |
 | `threshold_plot_r` | R script to plot SNP/sample counts across missingness thresholds |
-| `maf_plot_r` | R script to plot MAF distribution |
+| `mac_plot_r` | R script to plot MAC distribution |
 | `pca_plot_r` | R script to plot PCA results |
 | `check_bim_pl` | Will Rayner's `HRC-1000G-check-bim.pl` script |
 
@@ -247,7 +272,8 @@ QC thresholds are defined in the json configuration file. The table lists values
 | `geno_threshold` | Max SNP missingness rate | `0.05` | |
 | `mind_threshold` | Max sample missingness rate | `0.05` | |
 | `hwe_pvalue` | Min HWE p-value | `1e-6` | |
-| `maf_threshold` | Min MAF to retain a SNP | `0.01` | |
+| `mac_threshold` | Min minor allele count to retain a SNP | `50` | |
+| `chr_args` | Chromosomes to retain after sample QC | `"--chr 1-22"` | Use PLINK2 encoding (e.g. `"--chr 1-26"` for all) |
 | `ld_r2` | Max r² for LD pruning | `0.2` | |
 | `ld_window_kb` | LD pruning window size (kb) | `50` | |
 | `ld_step` | LD pruning step size (SNPs) | `5` | |
@@ -272,9 +298,9 @@ can be deleted once the run is verified.
 | `problem_samples` | Samples removed at sex check step | |
 | `het_check_report` | Per-sample heterozygosity rates | |
 | `het_fail_samples` | Samples removed at heterozygosity step | |
-| `maf_plot` | MAF distribution and before/after barplot | |
-| `maf_freq_before` | Allele frequencies before MAF filter (QC diagnostic) | |
-| `maf_freq_after` | Allele frequencies after MAF filter (QC diagnostic) | |
+| `mac_plot` | MAC distribution and before/after barplot | |
+| `mac_freq_before` | Allele frequencies before MAC filter (QC diagnostic) | |
+| `mac_freq_after` | Allele frequencies after MAC filter (QC diagnostic) | |
 | `pihat_genome` | All related pairs above `pihat_min` (informational) | Only present if `run_relatedness_check = true`|
 | `king_cutoff_out_id` | Samples removed at relatedness step | Only present if `run_relatedness_check = true` |
 | `prune_in` | LD-pruned SNP list (useful for PCA) | |
@@ -382,14 +408,14 @@ This is just a partial example of the JSON configuration file. For a full list o
   "genotype_qc_preimputation.check_heterozygosity_r":    "/path/to/check_heterozygosity_rate.R",
   "genotype_qc_preimputation.heterozygosity_outliers_r": "/path/to/heterozygosity_outliers_list.R",
   "genotype_qc_preimputation.threshold_plot_r":          "/path/to/threshold_plot.R",
-  "genotype_qc_preimputation.maf_plot_r":                "/path/to/maf_plot.R",
+  "genotype_qc_preimputation.mac_plot_r":                "/path/to/mac_plot.R",
   "genotype_qc_preimputation.pca_plot_r":                "/path/to/pca_plot.R",
   "genotype_qc_preimputation.check_bim_pl":              "/path/to//HRC-1000G-check-bim.pl",
   "genotype_qc_preimputation.hrc_ref_freq":              "/path/to/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz",
   "genotype_qc_preimputation.geno_threshold":            0.03,
   "genotype_qc_preimputation.mind_threshold":            0.05,
   "genotype_qc_preimputation.hwe_pvalue":                1e-6,
-  "genotype_qc_preimputation.maf_threshold":             0.01,
+  "genotype_qc_preimputation.mac_threshold":             50,
   "genotype_qc_preimputation.ld_r2":                     0.2,
   "genotype_qc_preimputation.ld_window_kb":              50,
   "genotype_qc_preimputation.ld_step":                   5,
@@ -484,7 +510,7 @@ in the JSON (see [Tool paths](#tool-paths-optional) above).
 |---|---|---|
 | PLINK 1.9 | ≥ 1.9 | Most QC steps |
 | PLINK2 | ≥ 2.0 | KING relatedness, PCA |
-| R / Rscript | ≥ 4.0 | Heterozygosity, duplicate, MAF, PCA scripts |
+| R / Rscript | ≥ 4.0 | Heterozygosity, duplicate, MAC, PCA scripts |
 | Perl | any recent | HRC check-bim script |
 | bcftools / bgzip / tabix | any recent | VCF conversion for imputation |
 | miniwdl or Cromwell | any recent | WDL executor |

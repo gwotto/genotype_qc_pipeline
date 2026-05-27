@@ -14,15 +14,26 @@ version 1.0
 ##   0b. Remove duplicate sample IDs
 ##   1.  SNP missingness filter        (--geno)
 ##   2.  Sample missingness filter     (--mind)
-##   3.  Sex check & removal of fails  (skipped if no X-chromosome SNPs)
-##   4.  MAF filter & monomorphic SNP removal
+##   2b. Report variants per chromosome (after sample filtering)
+##   3.  Sex check & removal of fails  (skipped if no X-chromosome SNPs;
+##       samples with unknown sex (sex = 0) are retained)
+##   4.  MAC filter & monomorphic SNP removal
 ##   5.  Hardy-Weinberg equilibrium filter
 ##   6.  LD pruning (generates SNP list for steps 7 & 9)
 ##   7.  Heterozygosity outlier removal
-##   8.  Restrict to autosomes (chr 1–22)
+##   8.  Chromosome filter (configurable via chr_args, e.g. "--chr 1-22")
 ##   9.  Relatedness filtering (KING)
 ##   10. PCA (diagnostic, pre-imputation)
+##   10b.Report variants per chromosome (final, pre-imputation)
 ##   11. Prepare for imputation (TOPMed/HRC)
+##
+## CHROMOSOME ENCODING
+##   Uses PLINK2 chromosome encoding throughout:
+##     Autosomes:  1–22
+##     X:          23
+##     Y:          24
+##     PAR (XY):   25
+##     MT:         26
 ##
 ## EXECUTION
 ##   miniwdl run genotype_qc_preimputation.wdl -i inputs.json  # requires Docker
@@ -62,7 +73,7 @@ workflow genotype_qc_preimputation {
         File heterozygosity_outliers_r  # R script: flags samples >3 SD from mean het rate
         File threshold_plot_r   # R script: plots SNP/sample counts across thresholds
         File pca_plot_r      # R script: plots PCA results
-        File maf_plot_r      # R script: plots MAF distribution and barplot
+        File mac_plot_r      # R script: plots MAC distribution and barplot
     
         # -- Tool paths -----------------------------------------------------
         # Change these if tools are not on $PATH
@@ -79,13 +90,16 @@ workflow genotype_qc_preimputation {
         # Typical values shown; adjust for your study.
         Float geno_threshold  # Max missing genotype rate per SNP    (e.g. 0.05 = 5%)
         Float mind_threshold  # Max missing genotype rate per sample (e.g. 0.05 = 5%)
-        Float hwe_pvalue      # Min HWE p-value to retain SNP        (e.g. 1e-6)
-        Float  maf_threshold   # Min MAF to retain a SNP (e.g. 0.01 = 1%)
+        Float  hwe_pvalue      # Min HWE p-value to retain SNP        (e.g. 1e-6)
+        Int    mac_threshold   # Min minor allele count to retain a SNP (e.g. 50)
         Float ld_r2           # Max r² for LD pruning                (e.g. 0.2)
         Int   ld_window_kb    # Sliding window size in kb            (e.g. 50)
         Int   ld_step         # Window step size in SNPs             (e.g. 5)
         Float pihat_min       # Min pi-hat to flag related pairs     (e.g. 0.2)
         Float king_cutoff     # KING kinship coefficient cutoff      (e.g. 0.0884 ≈ 3rd degree)
+
+        # -- Chromosome filtering -----------------------------------------------
+        String chr_args  # PLINK chromosome filter args (e.g. "--chr 1-22" or "--autosome")
 
         # -- PCA ----------------------------------------------------------------
         Int    n_pcs     # Number of principal components to compute
@@ -179,6 +193,13 @@ workflow genotype_qc_preimputation {
             label    = "Step 2   Sample missingness"
     }
 
+    # Report variants per chromosome before the sex-check step
+    call VariantsPerChromosome as InitialVariantsPerChromosome {
+        input:
+            bim_file = MindFilter.out_bim,
+            label    = "Step 2b  Variants per chromosome"
+    }
+
     # -- Threshold sweep: informational only, does not affect QC outputs ---
     # Runs PLINK across a range of --geno and --mind thresholds to show how
     # many SNPs/samples would be retained at each cutoff. Used to validate
@@ -239,13 +260,6 @@ workflow genotype_qc_preimputation {
                 fam_file = RemoveSexFails.out_fam,
                 label    = "Step 3   Sex check"
         }
-
-        # Report variants per chromosome after sex check
-        call VariantsPerChromosome as VariantsAfterSexCheck {
-            input:
-                bim_file = RemoveSexFails.out_bim,
-                label    = "         Sex check - variants per chromosome"
-        }
     }
 
     String sex_check_log_line = select_first([
@@ -253,48 +267,44 @@ workflow genotype_qc_preimputation {
         "Step 3   Sex check                            [skipped - no X SNPs]"
     ])
 
-    String sex_check_chr_line = select_first([
-        VariantsAfterSexCheck.log_line,
-        "         Sex check - variants per chromosome  [skipped - no X SNPs]"
-    ])
+    String sex_check_chr_line = InitialVariantsPerChromosome.log_line
 
 
-    # -- Step 4: MAF filter & monomorphic SNP removal ----------------------
-    # Removes SNPs with MAF = 0 (monomorphic) and below maf_threshold.
+    # -- Step 4: MAC filter & monomorphic SNP removal ----------------------
+    # Removes SNPs with MAC = 0 (monomorphic) and below mac_threshold.
     # Monomorphic SNPs carry no association signal and cause numerical issues.
     # Applied here — before HWE and LD pruning — so that:
-    #   • HWE tests run only on common variants (reliable power)
-    #   • LD pruning and heterozygosity checks use common variants only
-    # Pre-imputation threshold: 0.01 recommended.
-    call MafFilter {
+    #   - HWE tests run only on common variants (reliable power)
+    #   - LD pruning and heterozygosity checks use common variants only
+    call MacFilter {
         input:
             bed_file      = select_first([RemoveSexFails.out_bed, MindFilter.out_bed]),
             bim_file      = select_first([RemoveSexFails.out_bim, MindFilter.out_bim]),
             fam_file      = select_first([RemoveSexFails.out_fam, MindFilter.out_fam]),
-            maf_threshold = maf_threshold,
+            mac_threshold = mac_threshold,
             output_prefix = output_prefix + "_QC4",
             plink_bin     = plink_bin,
             rscript_bin   = rscript_bin,
-            maf_plot_r    = maf_plot_r
+            mac_plot_r    = mac_plot_r
     }
 
     call CountBimFam as LogStep4 {
         input:
-            bim_file = MafFilter.out_bim,
-            fam_file = MafFilter.out_fam,
-            label    = "Step 4   MAF filter"
+            bim_file = MacFilter.out_bim,
+            fam_file = MacFilter.out_fam,
+            label    = "Step 4   MAC filter"
     }
 
     # -- Step 5: Hardy-Weinberg equilibrium filter -------------------------
     # Removes SNPs that deviate significantly from HWE in controls.
     # Extreme HWE deviation often indicates genotyping error.
-    # Applied after MAF filter (step 4): HWE tests are unreliable for rare
+    # Applied after MAC filter (step 4): HWE tests are unreliable for rare
     # variants due to low expected counts at low frequencies.
     call PlinkFilter as HweFilter {
         input:
-            bed_file      = MafFilter.out_bed,
-            bim_file      = MafFilter.out_bim,
-            fam_file      = MafFilter.out_fam,
+            bed_file      = MacFilter.out_bed,
+            bim_file      = MacFilter.out_bim,
+            fam_file      = MacFilter.out_fam,
             plink_args    = "--hwe " + hwe_pvalue,
             output_prefix = output_prefix + "_QC5",
             plink_bin     = plink_bin
@@ -361,24 +371,25 @@ workflow genotype_qc_preimputation {
             label    = "Step 7   Heterozygosity filter"
     }
 
-    # -- Step 8: Restrict to autosomes -------------------------------------
+    # -- Step 8: Restrict to selected chromosomes -------------------------------------
     # Retains only chromosomes 1–22 for downstream association analysis.
     # Sex chromosomes and mitochondrial SNPs require separate handling.
-    call PlinkFilter as AutosomeFilter {
+    # Chromosome filtering args are configurable (e.g. "--chr 1-23" or "--chr 1-10,12-22").
+    call PlinkFilter as ChromosomeFilter {
         input:
             bed_file      = RemoveHetFails.out_bed,
             bim_file      = RemoveHetFails.out_bim,
             fam_file      = RemoveHetFails.out_fam,
-            plink_args    = "--chr 1-22",
+            plink_args    = chr_args,
             output_prefix = output_prefix + "_QC7",
             plink_bin     = plink_bin
     }
 
     call CountBimFam as LogStep8 {
         input:
-            bim_file = AutosomeFilter.out_bim,
-            fam_file = AutosomeFilter.out_fam,
-            label    = "Step 8   Autosome filter (chr 1-22)"
+            bim_file = ChromosomeFilter.out_bim,
+            fam_file = ChromosomeFilter.out_fam,
+            label    = "Step 8   Chromosome filter"
     }
 
     # -- Step 9: Relatedness filtering -------------------------------------
@@ -391,9 +402,9 @@ workflow genotype_qc_preimputation {
     if (run_relatedness_check) {
     call RelatednessCheck {
         input:
-            bed_file      = AutosomeFilter.out_bed,
-            bim_file      = AutosomeFilter.out_bim,
-            fam_file      = AutosomeFilter.out_fam,
+            bed_file      = ChromosomeFilter.out_bed,
+            bim_file      = ChromosomeFilter.out_bim,
+            fam_file      = ChromosomeFilter.out_fam,
             prune_in      = LdPruning.prune_in,
             pihat_min     = pihat_min,
             king_cutoff   = king_cutoff,
@@ -404,9 +415,9 @@ workflow genotype_qc_preimputation {
 
     call RemoveSamples as RemoveRelated {
         input:
-            bed_file      = AutosomeFilter.out_bed,
-            bim_file      = AutosomeFilter.out_bim,
-            fam_file      = AutosomeFilter.out_fam,
+            bed_file      = ChromosomeFilter.out_bed,
+            bim_file      = ChromosomeFilter.out_bim,
+            fam_file      = ChromosomeFilter.out_fam,
             remove_list   = RelatednessCheck.king_cutoff_out,
             output_prefix = output_prefix + "_QC9",
             plink_bin     = plink_bin
@@ -436,9 +447,9 @@ String relatedness_log_line = select_first([
     #       as covariates in the GWAS model.
     call PCA {
         input:
-            bed_file      = select_first([RemoveRelated.out_bed, AutosomeFilter.out_bed]),
-            bim_file      = select_first([RemoveRelated.out_bim, AutosomeFilter.out_bim]),
-            fam_file      = select_first([RemoveRelated.out_fam, AutosomeFilter.out_fam]),
+            bed_file      = select_first([RemoveRelated.out_bed, ChromosomeFilter.out_bed]),
+            bim_file      = select_first([RemoveRelated.out_bim, ChromosomeFilter.out_bim]),
+            fam_file      = select_first([RemoveRelated.out_fam, ChromosomeFilter.out_fam]),
             prune_in      = LdPruning.prune_in,
             n_pcs         = n_pcs,
             output_prefix = output_prefix + "_QC9_pca",
@@ -458,15 +469,15 @@ String relatedness_log_line = select_first([
     # Report final per-chromosome variant counts before imputation prep
     call VariantsPerChromosome as FinalVariantsPerChromosome {
         input:
-            bim_file = select_first([RemoveRelated.out_bim, AutosomeFilter.out_bim]),
+            bim_file = select_first([RemoveRelated.out_bim, ChromosomeFilter.out_bim]),
             label    = "Step 10b Variants per chromosome (pre-imputation)"
     }
 
     call PrepareForImputation {
         input:
-            bed_file        = select_first([RemoveRelated.out_bed, AutosomeFilter.out_bed]),
-            bim_file        = select_first([RemoveRelated.out_bim, AutosomeFilter.out_bim]),
-            fam_file        = select_first([RemoveRelated.out_fam, AutosomeFilter.out_fam]),
+            bed_file        = select_first([RemoveRelated.out_bed, ChromosomeFilter.out_bed]),
+            bim_file        = select_first([RemoveRelated.out_bim, ChromosomeFilter.out_bim]),
+            fam_file        = select_first([RemoveRelated.out_fam, ChromosomeFilter.out_fam]),
             check_bim_pl    = check_bim_pl,
             hrc_ref_freq    = hrc_ref_freq,
             output_prefix   = output_prefix + "_imputation",
@@ -480,21 +491,29 @@ String relatedness_log_line = select_first([
 
     # -- Pipeline log ------------------------------------------------------
     # Collect per-step SNP/sample counts into a single human-readable log.
-    Array[String] log_lines = [
-        LogStep0b.line,
-        LogStep1.line,
-        LogStep2.line,
-        sex_check_log_line,
-        sex_check_chr_line,
-        LogStep4.line,
-        LogStep5.line,
-        LdPruning.log_line,
-        LogStep7.line,
-        LogStep8.line,
-        relatedness_log_line,
-        FinalVariantsPerChromosome.log_line,
-        PrepareForImputation.log_line
-    ]
+    Array[String] log_lines = flatten([
+        [
+            LogStep0b.line,
+            LogStep1.line,
+            LogStep2.line,
+            sex_check_log_line,
+            sex_check_chr_line
+        ],
+        InitialVariantsPerChromosome.log_lines,
+        [
+            LogStep4.line,
+            LogStep5.line,
+            LdPruning.log_line,
+            LogStep7.line,
+            LogStep8.line,
+            relatedness_log_line,
+            FinalVariantsPerChromosome.log_line
+        ],
+        FinalVariantsPerChromosome.log_lines,
+        [
+            PrepareForImputation.log_line
+        ]
+    ])
 
     call WriteLog {
         input:
@@ -509,23 +528,23 @@ String relatedness_log_line = select_first([
         File pipeline_log = WriteLog.log
 
         # Final QC-passed dataset — use these for association testing
-        File final_bed = select_first([RemoveRelated.out_bed, AutosomeFilter.out_bed])
-        File final_bim = select_first([RemoveRelated.out_bim, AutosomeFilter.out_bim])
-        File final_fam = select_first([RemoveRelated.out_fam, AutosomeFilter.out_fam])
+        File final_bed = select_first([RemoveRelated.out_bed, ChromosomeFilter.out_bed])
+        File final_bim = select_first([RemoveRelated.out_bim, ChromosomeFilter.out_bim])
+        File final_fam = select_first([RemoveRelated.out_fam, ChromosomeFilter.out_fam])
 
         # Sex check outputs (only present if X-chromosome SNPs exist)
         File? sexcheck_report = SexCheck.sexcheck_report
         File? problem_samples = SexCheck.problem_samples
-        File? variants_per_chr_after_sexcheck = VariantsAfterSexCheck.report
+        File? variants_per_chr_initial = InitialVariantsPerChromosome.report
 
         # Heterozygosity check outputs
         File het_check_report = HeterozygosityCheck.r_check_het  # Per-sample het rates
         File het_fail_samples = HeterozygosityCheck.het_fail_ind  # Outlier sample list
 
-        # MAF filter outputs (QC diagnostics; imputation freq computed separately)
-        File maf_plot        = MafFilter.maf_plot
-        File maf_freq_before = MafFilter.freq_before
-        File maf_freq_after  = MafFilter.freq_after
+        # MAC filter outputs (QC diagnostics; imputation freq computed separately)
+        File mac_plot        = MacFilter.mac_plot
+        File maf_freq_before = MacFilter.freq_before
+        File maf_freq_after  = MacFilter.freq_after
 
         # Relatedness outputs (relatedness filter is optional)
         File? pihat_genome       = RelatednessCheck.pihat_genome       # All pairs above pihat_min
@@ -783,9 +802,11 @@ task CountXSNPs {
 ## chromosome coding schemes.
 ##
 ## Output includes:
-##   - A formatted report of variants per chromosome
+##   - A formatted report of variants per chromosome (chromosomes with 0
+##     variants are omitted from the report)
 ##   - Separate counts for autosomes, sex chromosomes, and mitochondrial DNA
 ##   - A single-line summary for the pipeline log
+##   - A multi-line breakdown for inclusion in the pipeline log
 ## -----------------------------------------------------------------------------
 task VariantsPerChromosome {
     input {
@@ -795,17 +816,23 @@ task VariantsPerChromosome {
     command <<<
         set -euo pipefail
         
-        # Initialize counters
+        # Initialize output files
         > variants_per_chr_report.txt
+        > log_lines.txt
         
-        # Count variants per autosome (1-22 or 1-22 in any coding)
+        # Count and report variants per chromosome (1-22), skip zeros
         total_autosomes=0
-        for CHR in {1..22}; do
+        # Derive chromosome list from the bim file so we handle whatever
+        # chromosomes were selected in the config (not just 1-22).
+        CHROMS=$(awk '{print $1}' ~{bim_file} | sort -u -V)
+
+        for CHR in $CHROMS; do
             count=$(awk -v chr="$CHR" '$1==chr' ~{bim_file} | wc -l)
-            if [ $count -gt 0 ]; then
-                printf "  Autosome %2d:  %8d variants\n" "$CHR" "$count" >> variants_per_chr_report.txt
-                total_autosomes=$((total_autosomes + count))
+            if [ "$count" -gt 0 ]; then
+                printf "  Chromosome %2d:  %8d variants\n" "$CHR" "$count" >> variants_per_chr_report.txt
+                printf "  Chromosome %2d:  %8d variants\n" "$CHR" "$count" >> log_lines.txt
             fi
+            total_autosomes=$((total_autosomes + count))
         done
         
         # Count sex chromosomes (both old and new notations)
@@ -825,21 +852,22 @@ task VariantsPerChromosome {
         mt_plink2=$(awk '$1=="26"' ~{bim_file} | wc -l)
         mt_total=$((mt_plink1 + mt_plink2))
         
-        # Report sex chromosomes
-        if [ $x_total -gt 0 ]; then
-            printf "  X chromosome:  %8d variants\n" "$x_total" >> variants_per_chr_report.txt
+        # Only report sex chromosomes and related categories if non-zero
+        if [ "$x_total" -gt 0 ]; then
+            printf "  X chromosome:   %8d variants\n" "$x_total" >> variants_per_chr_report.txt
+            printf "  X chromosome:   %8d variants\n" "$x_total" >> log_lines.txt
         fi
-        
-        if [ $y_total -gt 0 ]; then
-            printf "  Y chromosome:  %8d variants\n" "$y_total" >> variants_per_chr_report.txt
+        if [ "$y_total" -gt 0 ]; then
+            printf "  Y chromosome:   %8d variants\n" "$y_total" >> variants_per_chr_report.txt
+            printf "  Y chromosome:   %8d variants\n" "$y_total" >> log_lines.txt
         fi
-        
-        if [ $xy_plink2 -gt 0 ]; then
+        if [ "$xy_plink2" -gt 0 ]; then
             printf "  PAR (XY):       %8d variants\n" "$xy_plink2" >> variants_per_chr_report.txt
+            printf "  PAR (XY):       %8d variants\n" "$xy_plink2" >> log_lines.txt
         fi
-        
-        if [ $mt_total -gt 0 ]; then
+        if [ "$mt_total" -gt 0 ]; then
             printf "  Mitochondrial:  %8d variants\n" "$mt_total" >> variants_per_chr_report.txt
+            printf "  Mitochondrial:  %8d variants\n" "$mt_total" >> log_lines.txt
         fi
         
         # Compute total variants and format log line
@@ -848,13 +876,14 @@ task VariantsPerChromosome {
             "~{label}" "$total_variants" >> variants_per_chr_report.txt
         
         # Create a concise single-line summary for the pipeline log
-        printf "%-42s  Total: %8d variants (A:%d X:%d Y:%d MT:%d)\n" \
-            "~{label}" "$total_variants" "$total_autosomes" "$x_total" "$y_total" "$mt_total" \
+        printf "%-42s  Total: %8d variants (A:%d X:%d Y:%d XY:%d MT:%d)\n" \
+            "~{label}" "$total_variants" "$total_autosomes" "$x_total" "$y_total" "$xy_plink2" "$mt_total" \
             > log_line.txt
     >>>
     output {
-        File report = "variants_per_chr_report.txt"
-        String log_line = read_string("log_line.txt")
+        File          report    = "variants_per_chr_report.txt"
+        String        log_line  = read_string("log_line.txt")
+        Array[String] log_lines = read_lines("log_lines.txt")
     }
     runtime { maxRetries: 1 }
 }
@@ -884,8 +913,50 @@ task SexCheck {
             --check-sex \
             --out ~{output_prefix}_sexcheck
 
-        # Extract FID and IID of samples that failed (status column != "OK")
-        awk '$5 != "OK" {print $1, $2}' ~{output_prefix}_sexcheck.sexcheck \
+        # Extract FID and IID of samples that failed sex check,
+        # but only if they have a known reported sex (not 0/unknown).
+        # This prevents samples with sex=0 from being removed when sex is unknown.
+        awk -v fam="~{fam_file}" '
+            # Build a lookup table of samples with known reported sex from the .fam file.
+            # Only keep entries where sex is 1 (male) or 2 (female).
+            BEGIN {
+                while ((getline line < fam) > 0) {
+                    if (line ~ /^[ \t]*$/) next
+                    split(line, fields, /[ \t]+/)
+                    fid = fields[1]
+                    iid = fields[2]
+                    sex = fields[5]  # column 5 is sex in .fam file
+                    ## creates a lookup table famsex["FID IID"] = sex
+                    if (sex == "1" || sex == "2") {
+                        famsex[fid, iid] = sex
+                    }
+                }
+            }
+
+            # Skip header/comment lines in the PLINK sexcheck output.
+            /^#/ || /^$/ { next }
+
+            # If the output contains a header line, capture the STATUS column index.
+            # Otherwise, default to using the final field as the status column.
+            $1 == "FID" && $2 == "IID" {
+                for (i = 1; i <= NF; i++) {
+                    header[$i] = i
+                }
+                status_col = header["STATUS"]
+                if (status_col == 0) {
+                    status_col = NF
+                }
+                next
+            }
+
+            # Flag only samples with a non-OK sex-check status that also have a known reported sex.
+            # Unknown reported sex (0) is ignored because it cannot be compared.
+            ($NF != "OK") {
+                ## if the keys "FID IID" exist in the famsex table, print them as problem samples
+                if (famsex[$1, $2]) {
+                    print $1, $2
+                }
+            }' ~{output_prefix}_sexcheck.sexcheck \
             > ~{output_prefix}_problem_samples.txt
 
         # Check which sex chromosome coding was used and annotate report
@@ -1105,28 +1176,28 @@ task PCA {
 }
 
 ## -----------------------------------------------------------------------------
-## MafFilter
-## Removes monomorphic SNPs (MAF = 0) and SNPs below maf_threshold.
+## MacFilter
+## Removes monomorphic SNPs (MAC = 0) and SNPs below mac_threshold.
 ## Steps:
 ##   1. Compute allele frequencies before filtering (--freq) → freq_before.frq
-##   2. Remove monomorphic SNPs (--maf 0.0000001)
-##   3. Remove SNPs below maf_threshold
+##   2. Remove monomorphic SNPs (--mac 0)
+##   3. Remove SNPs below mac_threshold
 ##   4. Compute allele frequencies after filtering → freq_after.frq
-##   5. R script plots MAF distribution and before/after barplot
+##   5. R script plots MAC distribution and before/after barplot
 ## freq_before and freq_after are QC diagnostics only. The allele frequency
 ## file used for imputation prep is computed separately in PrepareForImputation
 ## on the final post-relatedness dataset.
 ## -----------------------------------------------------------------------------
-task MafFilter {
+task MacFilter {
     input {
         File   bed_file
         File   bim_file
         File   fam_file
-        Float  maf_threshold
+        Int    mac_threshold
         String output_prefix
         String plink_bin
         String rscript_bin
-        File   maf_plot_r
+        File   mac_plot_r
     }
     command <<<
         set -euo pipefail
@@ -1139,22 +1210,22 @@ task MafFilter {
             --freq \
             --out freq_before
 
-        # Remove monomorphic SNPs (MAF exactly 0)
+        # Remove monomorphic SNPs (MAC exactly 0)
         # is also implicitely done by the next step, so this seems redundant
         ~{plink_bin} \
             --bed ~{bed_file} \
             --bim ~{bim_file} \
             --fam ~{fam_file} \
-            --maf 0.0000001 \
+            --mac 1 \
             --make-bed \
             --out tmp_no_monomorphic
 
-        # Apply the chosen MAF threshold
+        # Apply the chosen MAC threshold
         ~{plink_bin} \
             --bed tmp_no_monomorphic.bed \
             --bim tmp_no_monomorphic.bim \
             --fam tmp_no_monomorphic.fam \
-            --maf ~{maf_threshold} \
+            --mac ~{mac_threshold} \
             --make-bed \
             --out ~{output_prefix}
 
@@ -1166,7 +1237,7 @@ task MafFilter {
             --freq \
             --out freq_after
 
-        ~{rscript_bin} --vanilla ~{maf_plot_r} ~{maf_threshold}
+        ~{rscript_bin} --vanilla ~{mac_plot_r} ~{mac_threshold}
     >>>
     output {
         File out_bed     = "~{output_prefix}.bed"
@@ -1175,7 +1246,7 @@ task MafFilter {
         File log         = "~{output_prefix}.log"
         File freq_before = "freq_before.frq"
         File freq_after  = "freq_after.frq"
-        File maf_plot    = "maf_plot.png"
+        File mac_plot    = "mac_plot.png"
     }
     runtime { maxRetries: 1 }
 }
@@ -1259,13 +1330,24 @@ task PrepareForImputation {
         # Patch rm TEMP* to rm -f TEMP* — portable across macOS and Linux
         ~{perl_bin} -i -pe 's/^rm TEMP/rm -f TEMP/' Run-plink.sh
 
+        # Ensure the generated Run-plink.sh uses the configured PLINK binary
+        # rather than relying on `plink` being on the PATH.
+        PLINK_BIN="~{plink_bin}"
+        # Use a different delimiter (#) so replacement paths with / don't
+        # break the perl s/// expression. Keep \b word-boundaries intact.
+        ~{perl_bin} -i -pe 's#\bplink\b#'"$PLINK_BIN"'#g' Run-plink.sh
+
         # Step 3: Execute the generated PLINK commands
         # This performs strand flips, removes problem SNPs, and splits by chr
         bash Run-plink.sh
 
         # Step 4: Convert each per-chromosome PLINK file to VCF
         # TOPMed server requires one bgzipped, tabix-indexed VCF per chromosome
-        for CHR in {1..22}; do
+        # Derive chromosome list from the bim file so we handle whatever
+        # chromosomes were selected in the config (not just 1-22).
+        CHROMS=$(awk '{print $1}' ~{bim_file} | sort -u -V)
+
+        for CHR in $CHROMS; do
             PLINK_PREFIX=$(ls *-updated-chr${CHR}.bed 2>/dev/null \
                 | sed 's/\.bed//' || true)
 
