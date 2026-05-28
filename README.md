@@ -50,3 +50,6 @@ java -jar cromwell-85.jar run src/genotype_qc_imputation.wdl -i inputs.json
 # TODO
 
 - pruning and pcr before and after relationship check.
+
+# License
+This repository is licensed under the BSD 3-Clause License. See the [LICENSE](LICENSE) file for details.
