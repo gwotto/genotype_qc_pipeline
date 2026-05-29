@@ -931,27 +931,27 @@ task SexCheck {
                         famsex[fid, iid] = sex
                     }
                 }
+                status_col = 5  # default: STATUS is column 5 in PLINK sexcheck output
             }
 
             # Skip header/comment lines in the PLINK sexcheck output.
             /^#/ || /^$/ { next }
 
             # If the output contains a header line, capture the STATUS column index.
-            # Otherwise, default to using the final field as the status column.
+            # Otherwise, default to using column 5 as the status column.
             $1 == "FID" && $2 == "IID" {
                 for (i = 1; i <= NF; i++) {
                     header[$i] = i
                 }
-                status_col = header["STATUS"]
-                if (status_col == 0) {
-                    status_col = NF
+                if ("STATUS" in header) {
+                    status_col = header["STATUS"]
                 }
                 next
             }
 
             # Flag only samples with a non-OK sex-check status that also have a known reported sex.
             # Unknown reported sex (0) is ignored because it cannot be compared.
-            ($NF != "OK") {
+            ($status_col != "OK") {
                 ## if the keys "FID IID" exist in the famsex table, print them as problem samples
                 if (famsex[$1, $2]) {
                     print $1, $2
