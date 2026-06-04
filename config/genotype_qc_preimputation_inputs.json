@@ -10,12 +10,17 @@
   "genotype_qc_preimputation.check_heterozygosity_r":    "/path/to/genotype_qc_pipeline/src/check_heterozygosity_rate.R",
   "genotype_qc_preimputation.heterozygosity_outliers_r": "/path/to/genotype_qc_pipeline/src/heterozygosity_outliers_list.R",
   "genotype_qc_preimputation.threshold_plot_r": "/path/to/genotype_qc_pipeline/src/threshold_plot.R",
-  "genotype_qc_preimputation.pca_plot_r": "/path/to/genotype_qc_pipeline/src/pca_plot.R",
+  "genotype_qc_preimputation.ancestry_pca_plot_r": "/path/to/genotype_qc_pipeline/src/ancestry_pca_plot.R",
   "genotype_qc_preimputation.mac_plot_r":    "/path/to/genotype_qc_pipeline/src/mac_plot.R",
   "genotype_qc_preimputation.check_bim_pl":       "/path/to/genotype_qc_pipeline/src/HRC-1000G-check-bim.pl",
 
   "genotype_qc_preimputation.ld_regions":         "/path/to/high-LD-regions.txt",
   "genotype_qc_preimputation.hrc_ref_freq":    "/path/to/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz",
+
+  "genotype_qc_preimputation.ref_1kg_bed":  "/path/to/1kg_pruned_final.bed",
+  "genotype_qc_preimputation.ref_1kg_bim":  "/path/to/1kg_pruned_final.bim",
+  "genotype_qc_preimputation.ref_1kg_fam":  "/path/to/1kg_pruned_final.fam",
+  "genotype_qc_preimputation.ref_1kg_psam": "/path/to/all_phase3.psam",
 
   "genotype_qc_preimputation.plink_bin":   "plink",
   "genotype_qc_preimputation.plink2_bin":  "plink2",

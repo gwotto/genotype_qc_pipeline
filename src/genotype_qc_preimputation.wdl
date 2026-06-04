@@ -14,16 +14,16 @@ version 1.0
 ##   0b. Remove duplicate sample IDs
 ##   1.  SNP missingness filter        (--geno)
 ##   2.  Sample missingness filter     (--mind)
-##   2b. Report variants per chromosome (after sample filtering)
+##   2b. Report variants per chromosome
 ##   3.  Sex check & removal of fails  (skipped if no X-chromosome SNPs;
 ##       samples with unknown sex (sex = 0) are retained)
-##   4.  MAC filter & monomorphic SNP removal
-##   5.  Hardy-Weinberg equilibrium filter
-##   6.  LD pruning (generates SNP list for steps 7 & 9)
-##   7.  Heterozygosity outlier removal
-##   8.  Chromosome filter (configurable via chr_args, e.g. "--chr 1-22")
-##   9.  Relatedness filtering (KING)
-##   10. PCA (diagnostic, pre-imputation)
+##   4.  Ancestry PCA against 1000 Genomes
+##   5.  MAC filter & monomorphic SNP removal
+##   6.  Hardy-Weinberg equilibrium filter
+##   7.  LD pruning (generates SNP list for steps 7 & 9)
+##   8.  Heterozygosity outlier removal
+##   9.  Chromosome filter (configurable via chr_args, e.g. "--chr 1-22")
+##   10. Relatedness filtering (KING)
 ##   10b.Report variants per chromosome (final, pre-imputation)
 ##   11. Prepare for imputation (TOPMed/HRC)
 ##
@@ -72,7 +72,6 @@ workflow genotype_qc_preimputation {
         File check_heterozygosity_r  # R script: computes per-sample heterozygosity rates
         File heterozygosity_outliers_r  # R script: flags samples >3 SD from mean het rate
         File threshold_plot_r   # R script: plots SNP/sample counts across thresholds
-        File pca_plot_r      # R script: plots PCA results
         File mac_plot_r      # R script: plots MAC distribution and barplot
     
         # -- Tool paths -----------------------------------------------------
@@ -103,6 +102,16 @@ workflow genotype_qc_preimputation {
 
         # -- PCA ----------------------------------------------------------------
         Int    n_pcs     # Number of principal components to compute
+
+        # -- 1000 Genomes ancestry PCA --------------------------------------
+        # Pre-processed 1000G Phase 3 (hg19) reference panel in PLINK binary
+        # format. Should be LD-pruned and filtered to biallelic SNPs only
+        # (see pipeline documentation for preparation steps).
+        File   ref_1kg_bed       # 1000G reference panel .bed
+        File   ref_1kg_bim       # 1000G reference panel .bim
+        File   ref_1kg_fam       # 1000G reference panel .fam
+        File   ref_1kg_psam      # 1000G sample metadata with SuperPop labels
+        File   ancestry_pca_plot_r  # R script: plots study samples on 1000G PCA
 
         # -- Imputation preparation ----------------------------------------------
         File   check_bim_pl  # Will Rayner's HRC-1000G-check-bim.pl script
@@ -267,10 +276,29 @@ workflow genotype_qc_preimputation {
         "Step 3   Sex check                            [skipped - no X SNPs]"
     ])
 
-    String sex_check_chr_line = InitialVariantsPerChromosome.log_line
+    # -- Step 4: Ancestry PCA against 1000 Genomes -----------------------
+    # Merges the post-sex-check study data with the 1000G Phase 3 reference
+    # panel and computes PCA jointly. Used to assign superpopulation ancestry
+    # labels to study samples and identify ancestry outliers.
+    # Input data must be on hg19/GRCh37 to match the 1000G reference.
+    call AncestryPCA {
+        input:
+            bed_file           = select_first([RemoveSexFails.out_bed, MindFilter.out_bed]),
+            bim_file           = select_first([RemoveSexFails.out_bim, MindFilter.out_bim]),
+            fam_file           = select_first([RemoveSexFails.out_fam, MindFilter.out_fam]),
+            ref_bed            = ref_1kg_bed,
+            ref_bim            = ref_1kg_bim,
+            ref_fam            = ref_1kg_fam,
+            ref_psam           = ref_1kg_psam,
+            n_pcs              = n_pcs,
+            output_prefix      = output_prefix + "_ancestry_pca",
+            plink_bin          = plink_bin,
+            plink2_bin         = plink2_bin,
+            rscript_bin        = rscript_bin,
+            ancestry_pca_plot_r = ancestry_pca_plot_r
+    }
 
-
-    # -- Step 4: MAC filter & monomorphic SNP removal ----------------------
+    # -- Step 5: MAC filter & monomorphic SNP removal ----------------------
     # Removes SNPs with MAC = 0 (monomorphic) and below mac_threshold.
     # Monomorphic SNPs carry no association signal and cause numerical issues.
     # Applied here — before HWE and LD pruning — so that:
@@ -282,20 +310,20 @@ workflow genotype_qc_preimputation {
             bim_file      = select_first([RemoveSexFails.out_bim, MindFilter.out_bim]),
             fam_file      = select_first([RemoveSexFails.out_fam, MindFilter.out_fam]),
             mac_threshold = mac_threshold,
-            output_prefix = output_prefix + "_QC4",
+            output_prefix = output_prefix + "_QC5",
             plink_bin     = plink_bin,
             rscript_bin   = rscript_bin,
             mac_plot_r    = mac_plot_r
     }
 
-    call CountBimFam as LogStep4 {
+    call CountBimFam as LogStep5 {
         input:
             bim_file = MacFilter.out_bim,
             fam_file = MacFilter.out_fam,
-            label    = "Step 4   MAC filter"
+            label    = "Step 5   MAC filter"
     }
 
-    # -- Step 5: Hardy-Weinberg equilibrium filter -------------------------
+    # -- Step 6: Hardy-Weinberg equilibrium filter -------------------------
     # Removes SNPs that deviate significantly from HWE in controls.
     # Extreme HWE deviation often indicates genotyping error.
     # Applied after MAC filter (step 4): HWE tests are unreliable for rare
@@ -306,19 +334,19 @@ workflow genotype_qc_preimputation {
             bim_file      = MacFilter.out_bim,
             fam_file      = MacFilter.out_fam,
             plink_args    = "--hwe " + hwe_pvalue,
-            output_prefix = output_prefix + "_QC5",
+            output_prefix = output_prefix + "_QC6",
             plink_bin     = plink_bin
     }
 
-    call CountBimFam as LogStep5 {
+    call CountBimFam as LogStep6 {
         input:
             bim_file = HweFilter.out_bim,
             fam_file = HweFilter.out_fam,
-            label    = "Step 5   HWE filter"
+            label    = "Step 6   HWE filter"
     }
 
 
-    # -- Step 6: LD pruning ------------------------------------------------
+    # -- Step 7: LD pruning ------------------------------------------------
     # Generates a list of approximately independent SNPs by removing those
     # in high linkage disequilibrium. This pruned SNP set is used in the
     # heterozygosity check (step 7) and relatedness analysis (step 9) to
@@ -337,7 +365,7 @@ workflow genotype_qc_preimputation {
             plink_bin     = plink_bin
     }
 
-    # -- Step 7: Heterozygosity check --------------------------------------
+    # -- Step 8: Heterozygosity check --------------------------------------
     # Samples with unusually high or low heterozygosity are flagged.
     # High het → possible sample contamination.
     # Low het  → possible inbreeding or sample duplication.
@@ -360,18 +388,18 @@ workflow genotype_qc_preimputation {
             bim_file      = HweFilter.out_bim,
             fam_file      = HweFilter.out_fam,
             remove_list   = HeterozygosityCheck.het_fail_ind,
-            output_prefix = output_prefix + "_QC6",
+            output_prefix = output_prefix + "_QC8",
             plink_bin     = plink_bin
     }
 
-    call CountBimFam as LogStep7 {
+    call CountBimFam as LogStep8 {
         input:
             bim_file = RemoveHetFails.out_bim,
             fam_file = RemoveHetFails.out_fam,
-            label    = "Step 7   Heterozygosity filter"
+            label    = "Step 8   Heterozygosity filter"
     }
 
-    # -- Step 8: Restrict to selected chromosomes -------------------------------------
+    # -- Step 9: Restrict to selected chromosomes -------------------------------------
     # Retains only chromosomes 1–22 for downstream association analysis.
     # Sex chromosomes and mitochondrial SNPs require separate handling.
     # Chromosome filtering args are configurable (e.g. "--chr 1-23" or "--chr 1-10,12-22").
@@ -381,18 +409,18 @@ workflow genotype_qc_preimputation {
             bim_file      = RemoveHetFails.out_bim,
             fam_file      = RemoveHetFails.out_fam,
             plink_args    = chr_args,
-            output_prefix = output_prefix + "_QC7",
+            output_prefix = output_prefix + "_QC9",
             plink_bin     = plink_bin
     }
 
-    call CountBimFam as LogStep8 {
+    call CountBimFam as LogStep9 {
         input:
             bim_file = ChromosomeFilter.out_bim,
             fam_file = ChromosomeFilter.out_fam,
-            label    = "Step 8   Chromosome filter"
+            label    = "Step 9   Chromosome filter"
     }
 
-    # -- Step 9: Relatedness filtering -------------------------------------
+    # -- Step 10: Relatedness filtering -------------------------------------
     # Identifies cryptically related samples using two methods:
     #   • pi-hat (PLINK --genome): proportion of IBD alleles shared
     #   • KING kinship coefficient (PLINK2 --king-cutoff): more robust in
@@ -408,7 +436,7 @@ workflow genotype_qc_preimputation {
             prune_in      = LdPruning.prune_in,
             pihat_min     = pihat_min,
             king_cutoff   = king_cutoff,
-            output_prefix = output_prefix + "_QC8",
+            output_prefix = output_prefix + "_QC10",
             plink_bin     = plink_bin,
             plink2_bin    = plink2_bin
     }
@@ -419,44 +447,23 @@ workflow genotype_qc_preimputation {
             bim_file      = ChromosomeFilter.out_bim,
             fam_file      = ChromosomeFilter.out_fam,
             remove_list   = RelatednessCheck.king_cutoff_out,
-            output_prefix = output_prefix + "_QC9",
+            output_prefix = output_prefix + "_QC10b",
             plink_bin     = plink_bin
     }
 
-    call CountBimFam as LogStep9 {
+    call CountBimFam as LogStep10 {
         input:
             bim_file = RemoveRelated.out_bim,
             fam_file = RemoveRelated.out_fam,
-            label    = "Step 9   Relatedness filter (KING)"
+            label    = "Step 10   Relatedness filter (KING)"
     }
     }
 
 String relatedness_log_line = select_first([
-    LogStep9.line,
-    "Step 9   Relatedness filter (KING)            [skipped]"
+    LogStep10.line,
+    "Step 10   Relatedness filter (KING)            [skipped]"
 ])
 
-
-    # -- Step 10: PCA (pre-imputation, diagnostic only) --------------------
-    # Computes principal components on the final QC-passed dataset using the
-    # LD-pruned SNP list from step 6. Used to visualise population structure
-    # and identify potential ancestry outliers BEFORE imputation.
-    #
-    # NOTE: These PCs are diagnostic only — no samples are removed here.
-    #       PCA should be repeated after imputation to generate the PCs used
-    #       as covariates in the GWAS model.
-    call PCA {
-        input:
-            bed_file      = select_first([RemoveRelated.out_bed, ChromosomeFilter.out_bed]),
-            bim_file      = select_first([RemoveRelated.out_bim, ChromosomeFilter.out_bim]),
-            fam_file      = select_first([RemoveRelated.out_fam, ChromosomeFilter.out_fam]),
-            prune_in      = LdPruning.prune_in,
-            n_pcs         = n_pcs,
-            output_prefix = output_prefix + "_QC9_pca",
-            plink2_bin    = plink2_bin,
-            rscript_bin   = rscript_bin,
-            pca_plot_r    = pca_plot_r
-    }
 
     # -- Step 11: Prepare for TOPMed imputation ----------------------------
     # Aligns strand orientation to the TOPMed reference panel using Will
@@ -496,16 +503,17 @@ String relatedness_log_line = select_first([
             LogStep0b.line,
             LogStep1.line,
             LogStep2.line,
-            sex_check_log_line,
-            sex_check_chr_line
+            InitialVariantsPerChromosome.log_line
         ],
         InitialVariantsPerChromosome.log_lines,
         [
-            LogStep4.line,
+            sex_check_log_line,
+            AncestryPCA.log_line,
             LogStep5.line,
+            LogStep6.line,
             LdPruning.log_line,
-            LogStep7.line,
             LogStep8.line,
+            LogStep9.line,
             relatedness_log_line,
             FinalVariantsPerChromosome.log_line
         ],
@@ -550,14 +558,14 @@ String relatedness_log_line = select_first([
         File? pihat_genome       = RelatednessCheck.pihat_genome       # All pairs above pihat_min
         File? king_cutoff_out_id = RelatednessCheck.king_cutoff_out    # Samples removed by KING
 
-        # LD-pruned SNP lists (used in steps 6 & 8; useful for PCA too)
+        # LD-pruned SNP lists (used in steps 8 & 10; useful for PCA too)
         File prune_in  = LdPruning.prune_in
         File prune_out = LdPruning.prune_out
 
-        # PCA outputs (diagnostic — inspect for population outliers)
-        File pca_eigenvec  = PCA.eigenvec   # PC scores per sample
-        File pca_eigenval  = PCA.eigenval   # Variance explained per PC
-        File pca_plot      = PCA.pca_plot   # Scatter plots of PCs
+        # Ancestry PCA against 1000 Genomes
+        File ancestry_pca_eigenvec     = AncestryPCA.eigenvec       # PC scores (study + 1000G)
+        File ancestry_pca_plot         = AncestryPCA.pca_plot        # Study samples overlaid on 1000G
+        File ancestry_assignments      = AncestryPCA.assignments     # Per-sample superpopulation assignments
 
         # Per-chromosome variant counts (diagnostic — validates chromosome coding)
         File variants_per_chr_final = FinalVariantsPerChromosome.report
@@ -824,18 +832,20 @@ task VariantsPerChromosome {
         total_autosomes=0
         # Derive chromosome list from the bim file so we handle whatever
         # chromosomes were selected in the config (not just 1-22).
-        CHROMS=$(awk '{print $1}' ~{bim_file} | sort -u -V)
+        # Exclude non-autosomal chromosomes here; they are handled separately below.
+        CHROMS=$(awk '{print $1}' ~{bim_file} | sort -u -V | grep -vE '^(X|Y|MT|XY|23|24|25|26)$')
 
         for CHR in $CHROMS; do
             count=$(awk -v chr="$CHR" '$1==chr' ~{bim_file} | wc -l)
             if [ "$count" -gt 0 ]; then
-                printf "  Chromosome %2d:  %8d variants\n" "$CHR" "$count" >> variants_per_chr_report.txt
-                printf "  Chromosome %2d:  %8d variants\n" "$CHR" "$count" >> log_lines.txt
+                label=$(printf "Chromosome %2d:" "$CHR")
+                printf "  %-20s %8d variants\n" "$label" "$count" >> variants_per_chr_report.txt
+                printf "  %-20s %8d variants\n" "$label" "$count" >> log_lines.txt
             fi
             total_autosomes=$((total_autosomes + count))
         done
         
-        # Count sex chromosomes (both old and new notations)
+        # Count sex chromosomes (both PLINK1 and PLINK2 notations, combined)
         x_plink1=$(awk '$1=="X"' ~{bim_file} | wc -l)
         x_plink2=$(awk '$1=="23"' ~{bim_file} | wc -l)
         x_total=$((x_plink1 + x_plink2))
@@ -854,20 +864,20 @@ task VariantsPerChromosome {
         
         # Only report sex chromosomes and related categories if non-zero
         if [ "$x_total" -gt 0 ]; then
-            printf "  X chromosome:   %8d variants\n" "$x_total" >> variants_per_chr_report.txt
-            printf "  X chromosome:   %8d variants\n" "$x_total" >> log_lines.txt
+            printf "  %-20s %8d variants\n" "Chromosome 23 (X):" "$x_total" >> variants_per_chr_report.txt
+            printf "  %-20s %8d variants\n" "Chromosome 23 (X):" "$x_total" >> log_lines.txt
         fi
         if [ "$y_total" -gt 0 ]; then
-            printf "  Y chromosome:   %8d variants\n" "$y_total" >> variants_per_chr_report.txt
-            printf "  Y chromosome:   %8d variants\n" "$y_total" >> log_lines.txt
+            printf "  %-20s %8d variants\n" "Chromosome 24 (Y):" "$y_total" >> variants_per_chr_report.txt
+            printf "  %-20s %8d variants\n" "Chromosome 24 (Y):" "$y_total" >> log_lines.txt
         fi
         if [ "$xy_plink2" -gt 0 ]; then
-            printf "  PAR (XY):       %8d variants\n" "$xy_plink2" >> variants_per_chr_report.txt
-            printf "  PAR (XY):       %8d variants\n" "$xy_plink2" >> log_lines.txt
+            printf "  %-20s %8d variants\n" "Chromosome 25 (PAR):" "$xy_plink2" >> variants_per_chr_report.txt
+            printf "  %-20s %8d variants\n" "Chromosome 25 (PAR):" "$xy_plink2" >> log_lines.txt
         fi
         if [ "$mt_total" -gt 0 ]; then
-            printf "  Mitochondrial:  %8d variants\n" "$mt_total" >> variants_per_chr_report.txt
-            printf "  Mitochondrial:  %8d variants\n" "$mt_total" >> log_lines.txt
+            printf "  %-20s %8d variants\n" "Chromosome 26 (MT):" "$mt_total" >> variants_per_chr_report.txt
+            printf "  %-20s %8d variants\n" "Chromosome 26 (MT):" "$mt_total" >> log_lines.txt
         fi
         
         # Compute total variants and format log line
@@ -913,26 +923,10 @@ task SexCheck {
             --check-sex \
             --out ~{output_prefix}_sexcheck
 
-        # Extract FID and IID of samples that failed sex check,
-        # but only if they have a known reported sex (not 0/unknown).
-        # This prevents samples with sex=0 from being removed when sex is unknown.
-        awk -v fam="~{fam_file}" '
-            # Build a lookup table of samples with known reported sex from the .fam file.
-            # Only keep entries where sex is 1 (male) or 2 (female).
-            BEGIN {
-                while ((getline line < fam) > 0) {
-                    if (line ~ /^[ \t]*$/) next
-                    split(line, fields, /[ \t]+/)
-                    fid = fields[1]
-                    iid = fields[2]
-                    sex = fields[5]  # column 5 is sex in .fam file
-                    ## creates a lookup table famsex["FID IID"] = sex
-                    if (sex == "1" || sex == "2") {
-                        famsex[fid, iid] = sex
-                    }
-                }
-                status_col = 5  # default: STATUS is column 5 in PLINK sexcheck output
-            }
+        # Extract FID and IID of samples that failed sex check.
+        # PLINK already handles sex=0 (unknown) samples appropriately in --check-sex.
+        awk '
+            BEGIN { status_col = 5 }
 
             # Skip header/comment lines in the PLINK sexcheck output.
             /^#/ || /^$/ { next }
@@ -949,13 +943,9 @@ task SexCheck {
                 next
             }
 
-            # Flag only samples with a non-OK sex-check status that also have a known reported sex.
-            # Unknown reported sex (0) is ignored because it cannot be compared.
+            # Flag all samples with a non-OK sex-check status.
             ($status_col != "OK") {
-                ## if the keys "FID IID" exist in the famsex table, print them as problem samples
-                if (famsex[$1, $2]) {
-                    print $1, $2
-                }
+                print $1, $2
             }' ~{output_prefix}_sexcheck.sexcheck \
             > ~{output_prefix}_problem_samples.txt
 
@@ -1123,57 +1113,6 @@ task RelatednessCheck {
     runtime { maxRetries: 1 }
 }
 
-## -----------------------------------------------------------------------------
-## PCA
-## Computes principal components using PLINK2 --pca on LD-pruned SNPs.
-## The LD-pruned SNP list from LdPruning is reused here — no additional
-## pruning is needed.
-##
-## Output:
-##   .eigenvec — PC scores for each sample (used for plotting)
-##   .eigenval — variance explained by each PC
-##   pca_plot.png — scatter plots of PC1 vs PC2, PC1 vs PC3, PC2 vs PC3
-##
-## This task is diagnostic only. No samples are removed.
-## Run PCA again after imputation to produce PCs for use as GWAS covariates.
-## -----------------------------------------------------------------------------
-task PCA {
-    input {
-        File   bed_file
-        File   bim_file
-        File   fam_file
-        File   prune_in       # LD-pruned SNP list from LdPruning
-        Int    n_pcs          # Number of PCs to compute (e.g. 10)
-        String output_prefix
-        String plink2_bin
-        String rscript_bin
-        File   pca_plot_r
-    }
-    command <<<
-        set -euo pipefail
-
-        # Extract LD-pruned SNPs and compute PCA
-        ~{plink2_bin} \
-            --bed ~{bed_file} \
-            --bim ~{bim_file} \
-            --fam ~{fam_file} \
-            --extract ~{prune_in} \
-            --pca ~{n_pcs} \
-            --out ~{output_prefix}
-
-        ~{rscript_bin} --vanilla ~{pca_plot_r} \
-            ~{output_prefix}.eigenvec \
-            ~{output_prefix}.eigenval \
-            ~{n_pcs}
-    >>>
-    output {
-        File eigenvec = "~{output_prefix}.eigenvec"
-        File eigenval = "~{output_prefix}.eigenval"
-        File pca_plot = "pca_plot.png"
-        File log      = "~{output_prefix}.log"
-    }
-    runtime { maxRetries: 1 }
-}
 
 ## -----------------------------------------------------------------------------
 ## MacFilter
@@ -1251,11 +1190,173 @@ task MacFilter {
     runtime { maxRetries: 1 }
 }
 
+## -----------------------------------------------------------------------------
+## AncestryPCA
+## Merges study data with 1000 Genomes Phase 3 reference panel and runs a
+## joint PCA to assign superpopulation ancestry labels to study samples.
+##
+## Steps:
+##   1. Extract SNPs present in both study and 1000G reference (.bim overlap)
+##   2. Merge study data with 1000G using the overlapping SNP list
+##      - Strand flips are attempted automatically; unresolvable SNPs removed
+##   3. Run PCA on the merged dataset
+##   4. R script assigns superpopulation labels using a random forest trained
+##      on 1000G samples with known labels, and plots study samples overlaid
+##      on 1000G reference clusters
+##
+## Outputs:
+##   eigenvec        — PC scores for all samples (study + 1000G)
+##   pca_plot        — PC1 vs PC2 scatter plot coloured by population
+##   assignments     — TSV: study sample IID, predicted superpop, probability
+## -----------------------------------------------------------------------------
+task AncestryPCA {
+    input {
+        File   bed_file
+        File   bim_file
+        File   fam_file
+        File   ref_bed          # 1000G reference .bed
+        File   ref_bim          # 1000G reference .bim
+        File   ref_fam          # 1000G reference .fam
+        File   ref_psam         # 1000G sample metadata with SuperPop column
+        Int    n_pcs
+        String output_prefix
+        String plink_bin
+        String plink2_bin
+        String rscript_bin
+        File   ancestry_pca_plot_r
+    }
+    command <<<
+        set -euo pipefail
+
+        # Step 1: find SNPs present in both study and 1000G bim files
+        awk '{print $2}' ~{bim_file} | sort > study_snps.txt
+        awk '{print $2}' ~{ref_bim}  | sort > ref_snps.txt
+        comm -12 study_snps.txt ref_snps.txt > overlap_snps.txt
+
+        echo "Overlapping SNPs: $(wc -l < overlap_snps.txt)"
+
+        # Step 2: extract overlapping SNPs from both datasets
+        ~{plink_bin} \
+            --bed ~{bed_file} \
+            --bim ~{bim_file} \
+            --fam ~{fam_file} \
+            --extract overlap_snps.txt \
+            --make-bed \
+            --out study_overlap
+
+        ~{plink_bin} \
+            --bed ~{ref_bed} \
+            --bim ~{ref_bim} \
+            --fam ~{ref_fam} \
+            --extract overlap_snps.txt \
+            --make-bed \
+            --out ref_overlap
+
+        # Step 3: merge — first attempt
+        ~{plink_bin} \
+            --bed study_overlap.bed \
+            --bim study_overlap.bim \
+            --fam study_overlap.fam \
+            --bmerge ref_overlap.bed ref_overlap.bim ref_overlap.fam \
+            --make-bed \
+            --out merged_study_1kg || true
+
+        # If strand flip errors, attempt flip and retry
+        if [ -f merged_study_1kg-merge.missnp ]; then
+            echo "Strand flip issues detected — flipping and retrying merge"
+
+            ~{plink_bin} \
+                --bed study_overlap.bed \
+                --bim study_overlap.bim \
+                --fam study_overlap.fam \
+                --flip merged_study_1kg-merge.missnp \
+                --make-bed \
+                --out study_overlap_flipped
+
+            ~{plink_bin} \
+                --bed study_overlap_flipped.bed \
+                --bim study_overlap_flipped.bim \
+                --fam study_overlap_flipped.fam \
+                --bmerge ref_overlap.bed ref_overlap.bim ref_overlap.fam \
+                --make-bed \
+                --out merged_study_1kg || true
+
+            # If still unresolvable SNPs remain after flip, exclude them
+            if [ -f merged_study_1kg-merge.missnp ]; then
+                echo "Excluding unresolvable SNPs after flip"
+                ~{plink_bin} \
+                    --bed study_overlap_flipped.bed \
+                    --bim study_overlap_flipped.bim \
+                    --fam study_overlap_flipped.fam \
+                    --exclude merged_study_1kg-merge.missnp \
+                    --make-bed \
+                    --out study_overlap_clean
+
+                ~{plink_bin} \
+                    --bed ref_overlap.bed \
+                    --bim ref_overlap.bim \
+                    --fam ref_overlap.fam \
+                    --exclude merged_study_1kg-merge.missnp \
+                    --make-bed \
+                    --out ref_overlap_clean
+
+                ~{plink_bin} \
+                    --bed study_overlap_clean.bed \
+                    --bim study_overlap_clean.bim \
+                    --fam study_overlap_clean.fam \
+                    --bmerge ref_overlap_clean.bed ref_overlap_clean.bim ref_overlap_clean.fam \
+                    --make-bed \
+                    --out merged_study_1kg
+            fi
+        fi
+
+        # Step 4: run PCA on merged dataset
+        ~{plink2_bin} \
+            --bed merged_study_1kg.bed \
+            --bim merged_study_1kg.bim \
+            --fam merged_study_1kg.fam \
+            --pca ~{n_pcs} \
+            --out ~{output_prefix}
+
+        # Step 5: plot and assign ancestry labels
+        ~{rscript_bin} --vanilla ~{ancestry_pca_plot_r} \
+            ~{output_prefix}.eigenvec \
+            ~{ref_psam} \
+            ~{n_pcs} \
+            ~{output_prefix}
+
+        # Create a single-line summary of ancestry assignments for the pipeline log
+        if [ -f ~{output_prefix}_ancestry_assignments.tsv ]; then
+            counts=$(awk -F'\t' '
+                NR==1 { for(i=1;i<=NF;i++) hdr[$i]=i; \
+                         if ("superpop" in hdr) c=hdr["superpop"]; \
+                         else if ("predicted_pop" in hdr) c=hdr["predicted_pop"]; \
+                         else if ("predicted" in hdr) c=hdr["predicted"]; \
+                         else c=(NF>=2?2:1); next }
+                NR>1 && c { count[$c]++ }
+                END { sep=""; for (k in count) { printf "%s%s:%d", sep, k, count[k]; sep=" " } }
+            ' ~{output_prefix}_ancestry_assignments.tsv)
+
+            printf "%-42s  %s\n" "Step 4   Ancestry PCA" "$counts" > log_line.txt
+        else
+            printf "%-42s  %s\n" "Step 4   Ancestry PCA" "[no assignments]" > log_line.txt
+        fi
+    >>>
+    output {
+        File eigenvec    = "~{output_prefix}.eigenvec"
+        File eigenval    = "~{output_prefix}.eigenval"
+        File pca_plot    = "~{output_prefix}_ancestry_pca.png"
+        File assignments = "~{output_prefix}_ancestry_assignments.tsv"
+        File log         = "~{output_prefix}.log"
+        String log_line  = read_string("log_line.txt")
+    }
+    runtime { maxRetries: 1 }
+}
 
 ## -----------------------------------------------------------------------------
 ## PrepareForImputation
-## Aligns genotypes to the TOPMed reference panel and produces per-chromosome
-## VCF files for upload to the TOPMed imputation server.
+## Checks and prepares the final QC dataset for upload to the TOPMed imputation
+## server. Produces per-chromosome VCF files.
 ##
 ## Steps:
 ##   1. Compute allele frequencies on the final QC dataset (--freq)
@@ -1265,10 +1366,10 @@ task MacFilter {
 ##   4. Convert each per-chromosome PLINK dataset to bgzipped, tabix-indexed VCF
 ##
 ## The check-bim script removes:
-##   • SNPs absent from the TOPMed reference panel
-##   • Ambiguous SNPs (A/T and C/G) that cannot be strand-resolved
-##   • SNPs with allele frequency difference > 0.2 vs reference
-##   • SNPs with mismatched positions or alleles
+##   - SNPs absent from the TOPMed reference panel
+##   - Ambiguous SNPs (A/T and C/G) that cannot be strand-resolved
+##   - SNPs with allele frequency difference > 0.2 vs reference
+##   - SNPs with mismatched positions or alleles
 ##
 ## Reference:
 ##   Rayner W (2020) HRC or 1000G Imputation preparation and checking

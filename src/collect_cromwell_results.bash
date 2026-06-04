@@ -101,11 +101,17 @@ echo "Copying LD pruning SNP lists..."
 CALL="$BASE/call-LdPruning/execution"
 cp "$CALL"/*.prune.in "$CALL"/*.prune.out "$OUTDIR/ld_pruning/"
 
-# -- PCA (step 10 - PCA) -------------------------------------------------------
-echo "Copying PCA results..."
-CALL="$BASE/call-PCA/execution"
-cp "$CALL"/*.eigenvec "$CALL"/*.eigenval "$OUTDIR/pca/"
-cp "$CALL"/*.png "$OUTDIR/plots/" 2>/dev/null || true
+# -- Ancestry PCA against 1000 Genomes ---------------------------------------
+echo "Copying ancestry PCA results..."
+CALL="$BASE/call-AncestryPCA/execution"
+if [ -d "$CALL" ]; then
+    cp "$CALL"/*.eigenvec "$CALL"/*.eigenval "$OUTDIR/pca/" 2>/dev/null || true
+    cp "$CALL"/*_ancestry_pca.png "$OUTDIR/plots/" 2>/dev/null || true
+    for f in "$CALL"/*_ancestry_assignments.tsv; do
+        [ -e "$f" ] || continue
+        cp "$f" "$OUTDIR/pca/"
+    done
+fi
 
 # -- Imputation VCFs (step 11 - PrepareForImputation) -------------------------
 echo "Copying imputation VCFs..."
