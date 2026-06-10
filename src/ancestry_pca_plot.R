@@ -96,6 +96,7 @@ study <- study |>
 # -----------------------------------------------------------------------------
 assignments <- study |>
   select(FID, IID, predicted_pop, predicted_prob) |>
+  mutate(FID = ifelse(is.na(FID), IID, FID)) |>
   rename(superpop = predicted_pop, probability = predicted_prob)
 
 write_tsv(assignments, paste0(output_prefix, "_ancestry_assignments.tsv"))
