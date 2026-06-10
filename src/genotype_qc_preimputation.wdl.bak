@@ -80,6 +80,11 @@ workflow genotype_qc_preimputation {
         String plink2_bin   # PLINK 2.0 binary (used for KING relatedness)
         String rscript_bin  # R interpreter
 
+        # -- Optional workflow steps -----------------------------------------
+        # Whether to run relatedness check (step 9) and remove related samples.
+        # Can be set true/false in the configuration file
+        Boolean run_relatedness_check = true 
+
         # -- QC thresholds --------------------------------------------------
         # Typical values shown; adjust for your study.
         Float geno_threshold  # Max missing genotype rate per SNP    (e.g. 0.05 = 5%)
@@ -487,62 +492,58 @@ workflow genotype_qc_preimputation {
     #     the presence of population stratification
     # Samples identified by KING as above the cutoff are removed.
     
+    if (run_relatedness_check) {
     # Subset the chromosome-filtered dataset to ancestry set and compute
     # a separate LD-pruned SNP list for relatedness / final PCA.
     call PlinkFilter as SubsetAncestry_Chr {
-    input:
-        bed_file      = ChromosomeFilter.out_bed,
-        bim_file      = ChromosomeFilter.out_bim,
-        fam_file      = ChromosomeFilter.out_fam,
-        plink_args    = "--keep " + MakeAncestryKeepList.keep_list,
-        output_prefix = output_prefix + "_ancestry_subset_chr",
-        plink_bin     = plink_bin
+        input:
+            bed_file      = ChromosomeFilter.out_bed,
+            bim_file      = ChromosomeFilter.out_bim,
+            fam_file      = ChromosomeFilter.out_fam,
+            plink_args    = "--keep " + MakeAncestryKeepList.keep_list,
+            output_prefix = output_prefix + "_ancestry_subset_chr",
+            plink_bin     = plink_bin
     }
 
     call LdPruning as LdPruningRelatedness {
-    input:
-        bed_file      = SubsetAncestry_Chr.out_bed,
-        bim_file      = SubsetAncestry_Chr.out_bim,
-        fam_file      = SubsetAncestry_Chr.out_fam,
-        ld_regions    = ld_regions,
-        ld_window_kb  = ld_window_kb,
-        ld_step       = ld_step,
-        ld_r2         = ld_r2,
-        output_prefix = output_prefix + "_indepSNP_related",
-        plink_bin     = plink_bin
+        input:
+            bed_file      = SubsetAncestry_Chr.out_bed,
+            bim_file      = SubsetAncestry_Chr.out_bim,
+            fam_file      = SubsetAncestry_Chr.out_fam,
+            ld_regions    = ld_regions,
+            ld_window_kb  = ld_window_kb,
+            ld_step       = ld_step,
+            ld_r2         = ld_r2,
+            output_prefix = output_prefix + "_indepSNP_related",
+            plink_bin     = plink_bin
     }
 
     call RelatednessCheck {
-    input:
-        bed_file      = ChromosomeFilter.out_bed,
-        bim_file      = ChromosomeFilter.out_bim,
-        fam_file      = ChromosomeFilter.out_fam,
-        prune_in      = LdPruningRelatedness.prune_in,
-        pihat_min     = pihat_min,
-        king_cutoff   = king_cutoff,
-        output_prefix = output_prefix + "_QC10",
-        plink_bin     = plink_bin,
-        plink2_bin    = plink2_bin
+        input:
+            bed_file      = ChromosomeFilter.out_bed,
+            bim_file      = ChromosomeFilter.out_bim,
+            fam_file      = ChromosomeFilter.out_fam,
+            prune_in      = LdPruningRelatedness.prune_in,
+            pihat_min     = pihat_min,
+            king_cutoff   = king_cutoff,
+            output_prefix = output_prefix + "_QC10",
+            plink_bin     = plink_bin,
+            plink2_bin    = plink2_bin
     }
 
-    call RemoveSamples as RemoveRelated {
-    input:
-        bed_file      = ChromosomeFilter.out_bed,
-        bim_file      = ChromosomeFilter.out_bim,
-        fam_file      = ChromosomeFilter.out_fam,
-        remove_list   = RelatednessCheck.king_cutoff_out,
-        output_prefix = output_prefix + "_QC10b",
-        plink_bin     = plink_bin
-    }
 
     call CountBimFam as LogStep10 {
-    input:
-        bim_file = RemoveRelated.out_bim,
-        fam_file = RemoveRelated.out_fam,
-        label    = "Step 10   Relatedness filter (KING)"
+        input:
+            bim_file = ChromosomeFilter.out_bim,
+            fam_file = ChromosomeFilter.out_fam,
+            label    = "Step 10   Relatedness filter (KING)"
+    }
     }
 
-String relatedness_log_line = LogStep10.line
+String relatedness_log_line = select_first([
+    LogStep10.line,
+    "Step 10   Relatedness filter (KING)            [skipped]"
+])
 
 
     # -- Step 11: Prepare for TOPMed imputation ----------------------------
@@ -556,15 +557,15 @@ String relatedness_log_line = LogStep10.line
     # Report final per-chromosome variant counts before imputation prep
     call VariantsPerChromosome as FinalVariantsPerChromosome {
         input:
-            bim_file = select_first([RemoveRelated.out_bim, ChromosomeFilter.out_bim]),
+            bim_file = select_first([ChromosomeFilter.out_bim, ChromosomeFilter.out_bim]),
             label    = "Step 10b Variants per chromosome (pre-imputation)"
     }
 
     call PrepareForImputation {
         input:
-            bed_file        = select_first([RemoveRelated.out_bed, ChromosomeFilter.out_bed]),
-            bim_file        = select_first([RemoveRelated.out_bim, ChromosomeFilter.out_bim]),
-            fam_file        = select_first([RemoveRelated.out_fam, ChromosomeFilter.out_fam]),
+            bed_file        = select_first([ChromosomeFilter.out_bed, ChromosomeFilter.out_bed]),
+            bim_file        = select_first([ChromosomeFilter.out_bim, ChromosomeFilter.out_bim]),
+            fam_file        = select_first([ChromosomeFilter.out_fam, ChromosomeFilter.out_fam]),
             check_bim_pl    = check_bim_pl,
             hrc_ref_freq    = hrc_ref_freq,
             output_prefix   = output_prefix + "_imputation",
@@ -616,9 +617,9 @@ String relatedness_log_line = LogStep10.line
         File pipeline_log = WriteLog.log
 
         # Final QC-passed dataset — use these for association testing
-        File final_bed = select_first([RemoveRelated.out_bed, ChromosomeFilter.out_bed])
-        File final_bim = select_first([RemoveRelated.out_bim, ChromosomeFilter.out_bim])
-        File final_fam = select_first([RemoveRelated.out_fam, ChromosomeFilter.out_fam])
+        File final_bed = select_first([ChromosomeFilter.out_bed, ChromosomeFilter.out_bed])
+        File final_bim = select_first([ChromosomeFilter.out_bim, ChromosomeFilter.out_bim])
+        File final_fam = select_first([ChromosomeFilter.out_fam, ChromosomeFilter.out_fam])
 
         # Sex check outputs (only present if X-chromosome SNPs exist)
         File? sexcheck_report = SexCheck.sexcheck_report
@@ -636,7 +637,7 @@ String relatedness_log_line = LogStep10.line
 
         # Relatedness outputs (relatedness filter is optional)
         File? pihat_genome       = RelatednessCheck.pihat_genome       # All pairs above pihat_min
-        File? king_cutoff_out_id = RelatednessCheck.king_cutoff_out    # Samples removed by KING
+        File? king_cutoff_out_id = RelatednessCheck.king_cutoff_out    # Samples flagged as related by KING (not removed)
 
         # LD-pruned SNP lists (used in steps 8 & 10; useful for PCA too)
         File prune_in  = LdPruningHetSubset.prune_in
@@ -725,20 +726,22 @@ task ConvertToBinary {
                 # Normalize comma/space separation
                 PATT=$(echo "$POPS" | tr -d ' ')
 
-                # Determine header column for population labels and extract matching IIDs
+                # Extract matching IIDs from assignments file
                 awk -F"\t" -v patt="$PATT" '
-                NR==1 { for(i=1;i<=NF;i++) hdr[$i]=i;
-                          if ("superpop" in hdr) c=hdr["superpop"]; 
-                          else if ("predicted_pop" in hdr) c=hdr["predicted_pop"]; 
-                          else if ("predicted" in hdr) c=hdr["predicted"]; 
-                          if ("IID" in hdr) iidc=hdr["IID"]; else iidc=2;
-                          next }
+                NR==1 { 
+                    for(i=1;i<=NF;i++) hdr[$i]=i;
+                    if ("superpop" in hdr) c=hdr["superpop"]; 
+                    else if ("predicted_pop" in hdr) c=hdr["predicted_pop"]; 
+                    else if ("predicted" in hdr) c=hdr["predicted"]; 
+                    if ("IID" in hdr) iidc=hdr["IID"]; else iidc=2;
+                    next 
+                }
                 NR>1 {
                     n=split(patt, a, ",");
                     for (i=1;i<=n;i++) if ($c==a[i]) print $iidc
                 }' ~{assignments} > selected_iids.txt
 
-                # Map IIDs back to real FIDs using the provided .fam (IID -> FID)
+                # Map IIDs to FID+IID pairs using .fam file
                 awk 'NR==FNR{iids[$0]=1; next} ($2 in iids){print $1, $2}' selected_iids.txt ~{fam_file} > "$OUT" || true
                 rm -f selected_iids.txt || true
             fi

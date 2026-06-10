@@ -39,8 +39,8 @@
   "genotype_qc_preimputation.ld_step":        5,
   "genotype_qc_preimputation.pihat_min":      0.2,
   "genotype_qc_preimputation.king_cutoff":    0.0884,
-  "genotype_qc_preimputation.run_relatedness_check": true,
   "genotype_qc_preimputation.n_pcs":          10,
   "genotype_qc_preimputation.mac_threshold":  50,
-  "genotype_qc_preimputation.chr_args": "--chr 1-23"
+  "genotype_qc_preimputation.chr_args": "--chr 1-23",
+  "genotype_qc_preimputation.ancestry_populations": "ALL"
 }

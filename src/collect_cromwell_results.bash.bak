@@ -16,25 +16,23 @@
 #   <output_dir>/genotype_qc_preimputation_YYYY-MM-DD/
 #     qc_dataset/   Final QC'd PLINK files (bed/bim/fam)
 #     plots/        PNG plots (MAC, heterozygosity, PCA)
-#     reports/      QC reports (sex check, het, relatedness, freq, logs, ancestry)
+#     reports/      QC reports (sex check, het, relatedness, freq, logs)
 #     pca/          PCA eigenvectors and eigenvalues
 #     vcfs/         Imputation-ready VCFs per chromosome
 #     ld_pruning/   LD pruning SNP inclusion/exclusion lists
 #
 # Example:
-#   bash collect_cromwell_results.sh /data/cromwell-executions/myworkflow/3f2a1b4c-... ./results
+#   bash bash collect_cromwell_results.sh /data/cromwell-executions/myworkflow/3f2a1b4c-... ./results
 #
 # Notes:
 #   - Sex check files are only present if X-chromosome SNPs were in the dataset
-#   - Relatedness samples are flagged but NOT removed (user controls removal)
-#   - Ancestry assignments file can be used with PLINK to filter by ancestry
 # =============================================================================
 
 set -euo pipefail
 
 # -- Help message --------------------------------------------------------------
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || $# -lt 2 ]]; then
-    sed -n '/^# ====/,/^# ====/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//';
+    sed -n '/^# ====/,/^# ====/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'
     exit 0
 fi
 
@@ -58,9 +56,12 @@ echo "Copying pipeline log..."
 CALL="$BASE/call-WriteLog/execution"
 cp "$CALL"/*_pipeline.log "$OUTDIR/"
 
-# -- Final QC dataset (ChromosomeFilter; relatedness samples flagged but NOT removed) --
+# -- Final QC dataset (step 9 - RemoveRelated, or step 8 - ChromosomeFilter if relatedness skipped) --
 echo "Copying final QC dataset (PLINK bed/bim/fam)..."
-CALL="$BASE/call-ChromosomeFilter/execution"
+CALL="$BASE/call-RemoveRelated/execution"
+if [ ! -d "$CALL" ]; then
+    CALL="$BASE/call-ChromosomeFilter/execution"
+fi
 cp "$CALL"/*.bed "$CALL"/*.bim "$CALL"/*.fam "$OUTDIR/qc_dataset/"
 
 # -- Sex check report (step 3 - SexCheck / RemoveSexFails) --------------------
@@ -73,68 +74,41 @@ CALL="$BASE/call-RemoveSexFails/execution"
 CALL="$BASE/call-InitialVariantsPerChromosome/execution"
 [ -d "$CALL" ] && cp "$CALL"/variants_per_chr_report.txt "$OUTDIR/reports/initial_variants_per_chr.txt" 2>/dev/null || true
 
-# -- MAC plot & frequency files (step 2 - MacFilterSubset) --------------------------
-echo "Copying MAC plots and frequency files..."
-CALL="$BASE/call-MacFilterSubset/execution"
-cp "$CALL"/*.png "$OUTDIR/plots/"
-cp "$CALL"/*.frq "$OUTDIR/reports/"
-
-# -- HWE filter outputs --------------------------------------------------------
-echo "Copying HWE filter reports (if present)..."
-CALL="$BASE/call-HweFilterSubset/execution"
-[ -d "$CALL" ] && cp "$CALL"/*.hwe "$OUTDIR/reports/" 2>/dev/null || true
-
 # -- Heterozygosity report & fail list (step 7 - HetCheck / RemoveHetFails) ---
 echo "Copying heterozygosity reports..."
-CALL="$BASE/call-HeterozygosityCheckSubset/execution"
+CALL="$BASE/call-HeterozygosityCheck/execution"
 cp "$CALL"/*.het "$OUTDIR/reports/"
 cp "$CALL"/*.png "$OUTDIR/plots/" 2>/dev/null || true
 CALL="$BASE/call-RemoveHetFails/execution"
 cp "$CALL"/*.txt "$OUTDIR/reports/het_fail_samples.txt" 2>/dev/null || true
+
+# -- MAC plot & frequency files (step 4 - MacFilter) --------------------------
+echo "Copying MAC plots and frequency files..."
+CALL="$BASE/call-MacFilter/execution"
+cp "$CALL"/*.png "$OUTDIR/plots/"
+cp "$CALL"/*.frq "$OUTDIR/reports/"
 
 # -- Relatedness report (step 9 - RelatednessCheck) - skipped if run_relatedness_check=false
 echo "Copying relatedness reports (if present)..."
 CALL="$BASE/call-RelatednessCheck/execution"
 if [ -d "$CALL" ]; then
     cp "$CALL"/*.genome "$OUTDIR/reports/" 2>/dev/null || true
-    cp "$CALL"/*.king.cutoff.out.id "$OUTDIR/reports/relatedness_flagged_samples.txt" 2>/dev/null || true
+    cp "$CALL"/*.king.cutoff.out.id "$OUTDIR/reports/" 2>/dev/null || true
 fi
 
-# -- LD pruning SNP lists (heterozygosity & relatedness) --------------------------------
+# -- LD pruning SNP lists (step 6 - LdPruning) --------------------------------
 echo "Copying LD pruning SNP lists..."
-CALL="$BASE/call-LdPruningHetSubset/execution"
-if [ -d "$CALL" ]; then
-    cp "$CALL"/*.prune.in "$CALL"/*.prune.out "$OUTDIR/ld_pruning/" 2>/dev/null || true
-    # Rename to indicate these are for heterozygosity
-    if [ -f "$OUTDIR/ld_pruning/R_check.prune.in" ]; then
-        mv "$OUTDIR/ld_pruning/R_check.prune.in" "$OUTDIR/ld_pruning/het.prune.in"
-    fi
-    if [ -f "$OUTDIR/ld_pruning/R_check.prune.out" ]; then
-        mv "$OUTDIR/ld_pruning/R_check.prune.out" "$OUTDIR/ld_pruning/het.prune.out"
-    fi
-fi
+CALL="$BASE/call-LdPruning/execution"
+cp "$CALL"/*.prune.in "$CALL"/*.prune.out "$OUTDIR/ld_pruning/"
 
-CALL="$BASE/call-LdPruningRelatedness/execution"
-if [ -d "$CALL" ]; then
-    cp "$CALL"/*.prune.in "$CALL"/*.prune.out "$OUTDIR/ld_pruning/" 2>/dev/null || true
-    # Rename to indicate these are for relatedness
-    if [ -f "$OUTDIR/ld_pruning/R_check.prune.in" ]; then
-        mv "$OUTDIR/ld_pruning/R_check.prune.in" "$OUTDIR/ld_pruning/relatedness.prune.in"
-    fi
-    if [ -f "$OUTDIR/ld_pruning/R_check.prune.out" ]; then
-        mv "$OUTDIR/ld_pruning/R_check.prune.out" "$OUTDIR/ld_pruning/relatedness.prune.out"
-    fi
-fi
-
-# -- Ancestry PCA against 1000 Genomes & ancestry assignments -----
-echo "Copying ancestry PCA results and assignments..."
+# -- Ancestry PCA against 1000 Genomes ---------------------------------------
+echo "Copying ancestry PCA results..."
 CALL="$BASE/call-AncestryPCA/execution"
 if [ -d "$CALL" ]; then
     cp "$CALL"/*.eigenvec "$CALL"/*.eigenval "$OUTDIR/pca/" 2>/dev/null || true
     cp "$CALL"/*_ancestry_pca.png "$OUTDIR/plots/" 2>/dev/null || true
     for f in "$CALL"/*_ancestry_assignments.tsv; do
         [ -e "$f" ] || continue
-        cp "$f" "$OUTDIR/reports/ancestry_assignments.tsv"
         cp "$f" "$OUTDIR/pca/"
     done
 fi
@@ -164,4 +138,5 @@ ls "$output_dir"/qc_dataset/ \
    "$output_dir"/pca/ \
    "$output_dir"/vcfs/ \
    "$output_dir"/ld_pruning/
+
 
