@@ -86,7 +86,7 @@ CALL="$BASE/call-HweFilterSubset/execution"
 
 # -- Heterozygosity report & fail list (step 7 - HetCheck / RemoveHetFails) ---
 echo "Copying heterozygosity reports..."
-CALL="$BASE/call-HeterozygosityCheckSubset/execution"
+CALL="$BASE/call-HeterozygosityCheck/execution"
 cp "$CALL"/*.het "$OUTDIR/reports/"
 cp "$CALL"/*.png "$OUTDIR/plots/" 2>/dev/null || true
 CALL="$BASE/call-RemoveHetFails/execution"
@@ -102,7 +102,7 @@ fi
 
 # -- LD pruning SNP lists (heterozygosity & relatedness) --------------------------------
 echo "Copying LD pruning SNP lists..."
-CALL="$BASE/call-LdPruningHetSubset/execution"
+CALL="$BASE/call-LdPruningHet/execution"
 if [ -d "$CALL" ]; then
     cp "$CALL"/*.prune.in "$CALL"/*.prune.out "$OUTDIR/ld_pruning/" 2>/dev/null || true
     # Rename to indicate these are for heterozygosity

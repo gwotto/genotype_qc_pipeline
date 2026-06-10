@@ -407,21 +407,12 @@ workflow genotype_qc_preimputation {
     }
 
     # --- Step 7: LD pruning only as helper for heterozygosity (do not remove LD SNPs)
-    call PlinkFilter as SubsetAncestry_QC6 {
+
+    call LdPruning as LdPruningHet {
         input:
             bed_file      = RemoveVariantsAfterHWE.out_bed,
             bim_file      = RemoveVariantsAfterHWE.out_bim,
             fam_file      = RemoveVariantsAfterHWE.out_fam,
-            plink_args    = "--keep " + MakeAncestryKeepList.keep_list,
-            output_prefix = output_prefix + "_ancestry_subset_QC6",
-            plink_bin     = plink_bin
-    }
-
-    call LdPruning as LdPruningHetSubset {
-        input:
-            bed_file      = SubsetAncestry_QC6.out_bed,
-            bim_file      = SubsetAncestry_QC6.out_bim,
-            fam_file      = SubsetAncestry_QC6.out_fam,
             ld_regions    = ld_regions,
             ld_window_kb  = ld_window_kb,
             ld_step       = ld_step,
@@ -430,12 +421,12 @@ workflow genotype_qc_preimputation {
             plink_bin     = plink_bin
     }
 
-    call HeterozygosityCheck as HeterozygosityCheckSubset {
+    call HeterozygosityCheck as HeterozygosityCheck {
         input:
-            bed_file                  = SubsetAncestry_QC6.out_bed,
-            bim_file                  = SubsetAncestry_QC6.out_bim,
-            fam_file                  = SubsetAncestry_QC6.out_fam,
-            prune_in                  = LdPruningHetSubset.prune_in,
+            bed_file                  = RemoveVariantsAfterHWE.out_bed,
+            bim_file                  = RemoveVariantsAfterHWE.out_bim,
+            fam_file                  = RemoveVariantsAfterHWE.out_fam,
+            prune_in                  = LdPruningHet.prune_in,
             check_heterozygosity_r    = check_heterozygosity_r,
             heterozygosity_outliers_r = heterozygosity_outliers_r,
             plink_bin                 = plink_bin,
@@ -447,7 +438,7 @@ workflow genotype_qc_preimputation {
             bed_file      = RemoveVariantsAfterHWE.out_bed,
             bim_file      = RemoveVariantsAfterHWE.out_bim,
             fam_file      = RemoveVariantsAfterHWE.out_fam,
-            remove_list   = HeterozygosityCheckSubset.het_fail_ind,
+            remove_list   = HeterozygosityCheck.het_fail_ind,
             output_prefix = output_prefix + "_QC8",
             plink_bin     = plink_bin
     }
@@ -485,25 +476,15 @@ workflow genotype_qc_preimputation {
     #   • pi-hat (PLINK --genome): proportion of IBD alleles shared
     #   • KING kinship coefficient (PLINK2 --king-cutoff): more robust in
     #     the presence of population stratification
-    # Samples identified by KING as above the cutoff are removed.
+    # Samples identified by KING as above the cutoff are flagged (not automatically removed).
     
-    # Subset the chromosome-filtered dataset to ancestry set and compute
-    # a separate LD-pruned SNP list for relatedness / final PCA.
-    call PlinkFilter as SubsetAncestry_Chr {
-    input:
-        bed_file      = ChromosomeFilter.out_bed,
-        bim_file      = ChromosomeFilter.out_bim,
-        fam_file      = ChromosomeFilter.out_fam,
-        plink_args    = "--keep " + MakeAncestryKeepList.keep_list,
-        output_prefix = output_prefix + "_ancestry_subset_chr",
-        plink_bin     = plink_bin
-    }
+    # Compute LD-pruned SNP list for relatedness check and optional final PCA.
 
     call LdPruning as LdPruningRelatedness {
-    input:
-        bed_file      = SubsetAncestry_Chr.out_bed,
-        bim_file      = SubsetAncestry_Chr.out_bim,
-        fam_file      = SubsetAncestry_Chr.out_fam,
+        input:
+            bed_file      = ChromosomeFilter.out_bed,
+            bim_file      = ChromosomeFilter.out_bim,
+            fam_file      = ChromosomeFilter.out_fam,
         ld_regions    = ld_regions,
         ld_window_kb  = ld_window_kb,
         ld_step       = ld_step,
@@ -525,20 +506,11 @@ workflow genotype_qc_preimputation {
         plink2_bin    = plink2_bin
     }
 
-    call RemoveSamples as RemoveRelated {
-    input:
-        bed_file      = ChromosomeFilter.out_bed,
-        bim_file      = ChromosomeFilter.out_bim,
-        fam_file      = ChromosomeFilter.out_fam,
-        remove_list   = RelatednessCheck.king_cutoff_out,
-        output_prefix = output_prefix + "_QC10b",
-        plink_bin     = plink_bin
-    }
 
     call CountBimFam as LogStep10 {
     input:
-        bim_file = RemoveRelated.out_bim,
-        fam_file = RemoveRelated.out_fam,
+        bim_file = ChromosomeFilter.out_bim,
+        fam_file = ChromosomeFilter.out_fam,
         label    = "Step 10   Relatedness filter (KING)"
     }
 
@@ -556,15 +528,15 @@ String relatedness_log_line = LogStep10.line
     # Report final per-chromosome variant counts before imputation prep
     call VariantsPerChromosome as FinalVariantsPerChromosome {
         input:
-            bim_file = select_first([RemoveRelated.out_bim, ChromosomeFilter.out_bim]),
+            bim_file = select_first([ChromosomeFilter.out_bim, ChromosomeFilter.out_bim]),
             label    = "Step 10b Variants per chromosome (pre-imputation)"
     }
 
     call PrepareForImputation {
         input:
-            bed_file        = select_first([RemoveRelated.out_bed, ChromosomeFilter.out_bed]),
-            bim_file        = select_first([RemoveRelated.out_bim, ChromosomeFilter.out_bim]),
-            fam_file        = select_first([RemoveRelated.out_fam, ChromosomeFilter.out_fam]),
+            bed_file        = select_first([ChromosomeFilter.out_bed, ChromosomeFilter.out_bed]),
+            bim_file        = select_first([ChromosomeFilter.out_bim, ChromosomeFilter.out_bim]),
+            fam_file        = select_first([ChromosomeFilter.out_fam, ChromosomeFilter.out_fam]),
             check_bim_pl    = check_bim_pl,
             hrc_ref_freq    = hrc_ref_freq,
             output_prefix   = output_prefix + "_imputation",
@@ -591,7 +563,7 @@ String relatedness_log_line = LogStep10.line
             AncestryPCA.log_line,
             LogStep5.line,
             LogStep6.line,
-            LdPruningHetSubset.log_line,
+            LdPruningHet.log_line,
             LogStep8.line,
             LogStep9.line,
             relatedness_log_line,
@@ -616,9 +588,9 @@ String relatedness_log_line = LogStep10.line
         File pipeline_log = WriteLog.log
 
         # Final QC-passed dataset — use these for association testing
-        File final_bed = select_first([RemoveRelated.out_bed, ChromosomeFilter.out_bed])
-        File final_bim = select_first([RemoveRelated.out_bim, ChromosomeFilter.out_bim])
-        File final_fam = select_first([RemoveRelated.out_fam, ChromosomeFilter.out_fam])
+        File final_bed = select_first([ChromosomeFilter.out_bed, ChromosomeFilter.out_bed])
+        File final_bim = select_first([ChromosomeFilter.out_bim, ChromosomeFilter.out_bim])
+        File final_fam = select_first([ChromosomeFilter.out_fam, ChromosomeFilter.out_fam])
 
         # Sex check outputs (only present if X-chromosome SNPs exist)
         File? sexcheck_report = SexCheck.sexcheck_report
@@ -626,8 +598,8 @@ String relatedness_log_line = LogStep10.line
         File? variants_per_chr_initial = InitialVariantsPerChromosome.report
 
         # Heterozygosity check outputs
-        File het_check_report = HeterozygosityCheckSubset.r_check_het  # Per-sample het rates
-        File het_fail_samples = HeterozygosityCheckSubset.het_fail_ind  # Outlier sample list
+        File het_check_report = HeterozygosityCheck.r_check_het  # Per-sample het rates
+        File het_fail_samples = HeterozygosityCheck.het_fail_ind  # Outlier sample list
 
         # MAC filter outputs (QC diagnostics; imputation freq computed separately)
         File mac_plot        = MacFilterSubset.mac_plot
@@ -639,8 +611,8 @@ String relatedness_log_line = LogStep10.line
         File? king_cutoff_out_id = RelatednessCheck.king_cutoff_out    # Samples removed by KING
 
         # LD-pruned SNP lists (used in steps 8 & 10; useful for PCA too)
-        File prune_in  = LdPruningHetSubset.prune_in
-        File prune_out = LdPruningHetSubset.prune_out
+        File prune_in  = LdPruningHet.prune_in
+        File prune_out = LdPruningHet.prune_out
         File? related_prune_in = LdPruningRelatedness.prune_in
 
         # Ancestry PCA against 1000 Genomes
