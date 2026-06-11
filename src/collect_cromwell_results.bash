@@ -19,7 +19,6 @@
 #     reports/      QC reports (sex check, het, relatedness, freq, logs, ancestry)
 #     pca/          PCA eigenvectors and eigenvalues
 #     vcfs/         Imputation-ready VCFs per chromosome
-#     ld_pruning/   LD pruning SNP inclusion/exclusion lists
 #
 # Example:
 #   bash collect_cromwell_results.sh /data/cromwell-executions/myworkflow/3f2a1b4c-... ./results
@@ -50,7 +49,7 @@ BASE="$cromwell_run"
 
 # -- Create output subdirectories ----------------------------------------------
 OUTDIR="$output_dir"
-mkdir -p "$OUTDIR"/{qc_dataset,plots,reports,vcfs,pca,ld_pruning}
+mkdir -p "$OUTDIR"/{qc_dataset,plots,reports,vcfs,pca}
 echo "Staging results in     : $OUTDIR"
 
 # -- Pipeline log (WriteLog) ---------------------------------------------------
@@ -75,7 +74,7 @@ CALL="$BASE/call-InitialVariantsPerChromosome/execution"
 
 # -- MAC plot & frequency files (step 2 - MacFilterSubset) --------------------------
 echo "Copying MAC plots and frequency files..."
-CALL="$BASE/call-MacFilterSubset/execution"
+CALL="$BASE/call-MacFilter/execution"
 cp "$CALL"/*.png "$OUTDIR/plots/"
 cp "$CALL"/*.frq "$OUTDIR/reports/"
 
@@ -98,32 +97,6 @@ CALL="$BASE/call-RelatednessCheck/execution"
 if [ -d "$CALL" ]; then
     cp "$CALL"/*.genome "$OUTDIR/reports/" 2>/dev/null || true
     cp "$CALL"/*.king.cutoff.out.id "$OUTDIR/reports/relatedness_flagged_samples.txt" 2>/dev/null || true
-fi
-
-# -- LD pruning SNP lists (heterozygosity & relatedness) --------------------------------
-echo "Copying LD pruning SNP lists..."
-CALL="$BASE/call-LdPruningHet/execution"
-if [ -d "$CALL" ]; then
-    cp "$CALL"/*.prune.in "$CALL"/*.prune.out "$OUTDIR/ld_pruning/" 2>/dev/null || true
-    # Rename to indicate these are for heterozygosity
-    if [ -f "$OUTDIR/ld_pruning/R_check.prune.in" ]; then
-        mv "$OUTDIR/ld_pruning/R_check.prune.in" "$OUTDIR/ld_pruning/het.prune.in"
-    fi
-    if [ -f "$OUTDIR/ld_pruning/R_check.prune.out" ]; then
-        mv "$OUTDIR/ld_pruning/R_check.prune.out" "$OUTDIR/ld_pruning/het.prune.out"
-    fi
-fi
-
-CALL="$BASE/call-LdPruningRelatedness/execution"
-if [ -d "$CALL" ]; then
-    cp "$CALL"/*.prune.in "$CALL"/*.prune.out "$OUTDIR/ld_pruning/" 2>/dev/null || true
-    # Rename to indicate these are for relatedness
-    if [ -f "$OUTDIR/ld_pruning/R_check.prune.in" ]; then
-        mv "$OUTDIR/ld_pruning/R_check.prune.in" "$OUTDIR/ld_pruning/relatedness.prune.in"
-    fi
-    if [ -f "$OUTDIR/ld_pruning/R_check.prune.out" ]; then
-        mv "$OUTDIR/ld_pruning/R_check.prune.out" "$OUTDIR/ld_pruning/relatedness.prune.out"
-    fi
 fi
 
 # -- Ancestry PCA against 1000 Genomes & ancestry assignments -----
@@ -162,6 +135,4 @@ ls "$output_dir"/qc_dataset/ \
    "$output_dir"/plots/ \
    "$output_dir"/reports/ \
    "$output_dir"/pca/ \
-   "$output_dir"/vcfs/ \
-   "$output_dir"/ld_pruning/
-
+   "$output_dir"/vcfs/

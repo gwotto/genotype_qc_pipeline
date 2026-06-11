@@ -314,59 +314,34 @@ workflow genotype_qc_preimputation {
             output_prefix = output_prefix
     }
 
-    # --- Step 5: MAC detection on subset, removal on full cohort ----------
-    call PlinkFilter as SubsetAncestry_MAC {
+    # --- Step 5: MAC filter ----------
+    
+    call MacFilter {
         input:
             bed_file      = select_first([RemoveSexFails.out_bed, MindFilter.out_bed]),
             bim_file      = select_first([RemoveSexFails.out_bim, MindFilter.out_bim]),
             fam_file      = select_first([RemoveSexFails.out_fam, MindFilter.out_fam]),
-            plink_args    = "--keep " + MakeAncestryKeepList.keep_list,
-            output_prefix = output_prefix + "_ancestry_subset",
-            plink_bin     = plink_bin
-    }
-
-    call MacFilter as MacFilterSubset {
-        input:
-            bed_file      = SubsetAncestry_MAC.out_bed,
-            bim_file      = SubsetAncestry_MAC.out_bim,
-            fam_file      = SubsetAncestry_MAC.out_fam,
             mac_threshold = mac_threshold,
-            output_prefix = output_prefix + "_QC5_subset",
+            output_prefix = output_prefix + "_QC5",
             plink_bin     = plink_bin,
             rscript_bin   = rscript_bin,
             mac_plot_r    = mac_plot_r
     }
 
-    call SnpListDiff as MacRemoved {
-        input:
-            before_bim = SubsetAncestry_MAC.out_bim,
-            after_bim  = MacFilterSubset.out_bim,
-            output_prefix = output_prefix + "_mac"
-    }
-
-    call PlinkFilter as RemoveVariantsAfterMAC {
-        input:
-            bed_file      = select_first([RemoveSexFails.out_bed, MindFilter.out_bed]),
-            bim_file      = select_first([RemoveSexFails.out_bim, MindFilter.out_bim]),
-            fam_file      = select_first([RemoveSexFails.out_fam, MindFilter.out_fam]),
-            plink_args    = "--exclude " + MacRemoved.removed_snps,
-            output_prefix = output_prefix + "_QC5",
-            plink_bin     = plink_bin
-    }
-
     call CountBimFam as LogStep5 {
         input:
-            bim_file = RemoveVariantsAfterMAC.out_bim,
-            fam_file = RemoveVariantsAfterMAC.out_fam,
-            label    = "Step 5   MAC filter (subset detection)"
+            bim_file = MacFilter.out_bim,
+            fam_file = MacFilter.out_fam,
+            label    = "Step 4   MAC filter"
     }
+
 
     # --- Step 6: HWE detection on subset (after MAC removals), removal on full
     call PlinkFilter as SubsetAncestry_HWE {
         input:
-            bed_file      = RemoveVariantsAfterMAC.out_bed,
-            bim_file      = RemoveVariantsAfterMAC.out_bim,
-            fam_file      = RemoveVariantsAfterMAC.out_fam,
+            bed_file      = MacFilter.out_bed,
+            bim_file      = MacFilter.out_bim,
+            fam_file      = MacFilter.out_fam,
             plink_args    = "--keep " + MakeAncestryKeepList.keep_list,
             output_prefix = output_prefix + "_ancestry_subset_QC5",
             plink_bin     = plink_bin
@@ -391,9 +366,9 @@ workflow genotype_qc_preimputation {
 
     call PlinkFilter as RemoveVariantsAfterHWE {
         input:
-            bed_file      = RemoveVariantsAfterMAC.out_bed,
-            bim_file      = RemoveVariantsAfterMAC.out_bim,
-            fam_file      = RemoveVariantsAfterMAC.out_fam,
+            bed_file      = MacFilter.out_bed,
+            bim_file      = MacFilter.out_bim,
+            fam_file      = MacFilter.out_fam,
             plink_args    = "--exclude " + HweRemoved.removed_snps,
             output_prefix = output_prefix + "_QC6",
             plink_bin     = plink_bin
@@ -602,9 +577,9 @@ String relatedness_log_line = LogStep10.line
         File het_fail_samples = HeterozygosityCheck.het_fail_ind  # Outlier sample list
 
         # MAC filter outputs (QC diagnostics; imputation freq computed separately)
-        File mac_plot        = MacFilterSubset.mac_plot
-        File maf_freq_before = MacFilterSubset.freq_before
-        File maf_freq_after  = MacFilterSubset.freq_after
+        File mac_plot        = MacFilter.mac_plot
+        File maf_freq_before = MacFilter.freq_before
+        File maf_freq_after  = MacFilter.freq_after
 
         # Relatedness outputs (relatedness filter is optional)
         File? pihat_genome       = RelatednessCheck.pihat_genome       # All pairs above pihat_min
