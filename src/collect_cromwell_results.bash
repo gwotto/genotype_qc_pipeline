@@ -88,7 +88,7 @@ echo "Copying heterozygosity reports..."
 CALL="$BASE/call-HeterozygosityCheck/execution"
 cp "$CALL"/*.het "$OUTDIR/reports/"
 cp "$CALL"/*.png "$OUTDIR/plots/" 2>/dev/null || true
-CALL="$BASE/call-RemoveHetFails/execution"
+CALL="$BASE/call-RemoveHetFailsFromSubset/execution"
 cp "$CALL"/*.txt "$OUTDIR/reports/het_fail_samples.txt" 2>/dev/null || true
 
 # -- Relatedness report (step 9 - RelatednessCheck) - skipped if run_relatedness_check=false

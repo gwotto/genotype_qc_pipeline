@@ -18,14 +18,13 @@ version 1.0
 ##   3.  Sex check & removal of fails  (skipped if no X-chromosome SNPs;
 ##       samples with unknown sex (sex = 0) are retained)
 ##   4.  Ancestry PCA against 1000 Genomes
-##   5.  MAC filter & monomorphic SNP removal
-##   6.  Hardy-Weinberg equilibrium filter
-##   7.  LD pruning (generates SNP list for steps 7 & 9)
-##   8.  Heterozygosity outlier removal
-##   9.  Chromosome filter (configurable via chr_args, e.g. "--chr 1-22")
-##   10. Relatedness filtering (KING)
-##   10b.Report variants per chromosome (final, pre-imputation)
-##   11. Prepare for imputation (TOPMed/HRC)
+##   5.  MAC filter & monomorphic SNP removal (full cohort)
+##   6.  Hardy-Weinberg equilibrium filter (subset detection, full cohort removal)
+##   7a. LD pruning (helper for heterozygosity detection only)
+##   7b. Heterozygosity outlier removal (subset detection, subset removal)
+##   8.  Chromosome filter (configurable via chr_args, e.g. "--chr 1-22")
+##   9.  Relatedness filtering (KING - samples flagged, not removed)
+##   10. Prepare for imputation (TOPMed/HRC)
 ##
 ## CHROMOSOME ENCODING
 ##   Uses PLINK2 chromosome encoding throughout:
@@ -48,6 +47,48 @@ version 1.0
 ##   Anderson CA et al. (2010) Nat Protoc 5:1564–1573
 ##   https://doi.org/10.1038/nprot.2010.116
 ## =============================================================================
+
+
+    # Helper task: Merge het-filtered tested population with non-tested populations
+    task MergeKeepLists {
+        input {
+            File tested_fam      # FAM file with het-filtered tested population
+            File all_fam         # Original FAM file with all populations
+            File tested_keep     # Keep-list of tested populations
+            Boolean is_all_pops  # Whether testing all populations
+            String output_prefix
+        }
+        
+        command <<<
+            set -euo pipefail
+            
+            if [ "~{is_all_pops}" = "true" ]; then
+                # When testing all populations, just use the het-filtered FAM
+                awk '{print $1, $2}' ~{tested_fam} > ~{output_prefix}_merged_keep.txt
+            else
+                # When testing a subset:
+                # 1. Extract IIDs from tested population keep-list
+                awk '{print $2}' ~{tested_keep} > tested_iids.txt
+                
+                # 2. Get het-filtered tested samples from tested_fam
+                awk '{print $1, $2}' ~{tested_fam} > tested_filtered.txt
+                
+                # 3. Get non-tested populations (those NOT in the tested_keep list)
+                awk 'NR==FNR{iids[$0]=1; next} !($2 in iids) {print $1, $2}' tested_iids.txt ~{all_fam} > other_pops.txt
+                
+                # 4. Combine: het-filtered tested population + non-tested populations
+                cat tested_filtered.txt other_pops.txt > ~{output_prefix}_merged_keep.txt
+                
+                rm -f tested_iids.txt tested_filtered.txt other_pops.txt
+            fi
+        >>>
+        
+        output {
+            File merged_keep = "~{output_prefix}_merged_keep.txt"
+        }
+        
+        runtime { maxRetries: 1 }
+    }
 
 
 workflow genotype_qc_preimputation {
@@ -298,24 +339,8 @@ workflow genotype_qc_preimputation {
             ancestry_pca_plot_r = ancestry_pca_plot_r
     }
 
-    # -- Steps 5–8: For each QC step, detect problematic variants on the
-    #               ancestry-defined subset and remove those variants from
-    #               the full cohort before proceeding to the next step.
-    # Note: LD pruning here is only used as a helper for heterozygosity
-    #       detection (to generate a prune_in list). A separate pruning
-    #       step is used for relatedness and optional final PCA.
+    # --- Step 5: MAC filter (full cohort) ----------------------------------------
 
-    # 1) Build ancestry keep-list (used repeatedly)
-    call MakeAncestryKeepList {
-        input:
-            assignments = AncestryPCA.assignments,
-            fam_file    = select_first([RemoveSexFails.out_fam, MindFilter.out_fam]),
-            populations = ancestry_populations,
-            output_prefix = output_prefix
-    }
-
-    # --- Step 5: MAC filter ----------
-    
     call MacFilter {
         input:
             bed_file      = select_first([RemoveSexFails.out_bed, MindFilter.out_bed]),
@@ -332,11 +357,19 @@ workflow genotype_qc_preimputation {
         input:
             bim_file = MacFilter.out_bim,
             fam_file = MacFilter.out_fam,
-            label    = "Step 4   MAC filter"
+            label    = "Step 5   MAC filter"
     }
 
+    # --- Step 6: HWE filter (subset detection, full cohort removal) -----------
+    # Build ancestry keep-list for HWE and heterozygosity subsetting
+    call MakeAncestryKeepList {
+        input:
+            assignments = AncestryPCA.assignments,
+            fam_file    = MacFilter.out_fam,
+            populations = ancestry_populations,
+            output_prefix = output_prefix
+    }
 
-    # --- Step 6: HWE detection on subset (after MAC removals), removal on full
     call PlinkFilter as SubsetAncestry_HWE {
         input:
             bed_file      = MacFilter.out_bed,
@@ -381,7 +414,7 @@ workflow genotype_qc_preimputation {
             label    = "Step 6   HWE filter (subset detection)"
     }
 
-    # --- Step 7: LD pruning only as helper for heterozygosity (do not remove LD SNPs)
+    # --- Step 7a: LD pruning only as helper for heterozygosity (do not remove LD SNPs)
 
     call LdPruning as LdPruningHet {
         input:
@@ -396,11 +429,25 @@ workflow genotype_qc_preimputation {
             plink_bin     = plink_bin
     }
 
+    # --- Step 7: Heterozygosity filter (subset detection, subset removal) ---
+    # Detect heterozygosity outliers only in user-defined subpopulation(s)
+    # Remove failed samples only from that subpopulation (keep other populations intact)
+    
+    call PlinkFilter as SubsetAncestry_HET {
+        input:
+            bed_file      = RemoveVariantsAfterHWE.out_bed,
+            bim_file      = RemoveVariantsAfterHWE.out_bim,
+            fam_file      = RemoveVariantsAfterHWE.out_fam,
+            plink_args    = "--keep " + MakeAncestryKeepList.keep_list,
+            output_prefix = output_prefix + "_ancestry_subset_HET",
+            plink_bin     = plink_bin
+    }
+
     call HeterozygosityCheck as HeterozygosityCheck {
         input:
-            bed_file                  = RemoveVariantsAfterHWE.out_bed,
-            bim_file                  = RemoveVariantsAfterHWE.out_bim,
-            fam_file                  = RemoveVariantsAfterHWE.out_fam,
+            bed_file                  = SubsetAncestry_HET.out_bed,
+            bim_file                  = SubsetAncestry_HET.out_bim,
+            fam_file                  = SubsetAncestry_HET.out_fam,
             prune_in                  = LdPruningHet.prune_in,
             check_heterozygosity_r    = check_heterozygosity_r,
             heterozygosity_outliers_r = heterozygosity_outliers_r,
@@ -408,45 +455,67 @@ workflow genotype_qc_preimputation {
             rscript_bin               = rscript_bin
     }
 
-    call RemoveSamples as RemoveHetFails {
+    call RemoveSamples as RemoveHetFailsFromSubset {
+        input:
+            bed_file      = SubsetAncestry_HET.out_bed,
+            bim_file      = SubsetAncestry_HET.out_bim,
+            fam_file      = SubsetAncestry_HET.out_fam,
+            remove_list   = HeterozygosityCheck.het_fail_ind,
+            output_prefix = output_prefix + "_QC7_het_subset",
+            plink_bin     = plink_bin
+    }
+
+    # Merge het-filtered subset back with other populations (if ancestry_populations != "ALL")
+    # When ancestry_populations = "ALL": use the het-filtered subset directly (all het failures removed)
+    # When testing a specific population: combine het-filtered subset + non-tested populations
+    call MergeKeepLists as MergeHetKeepLists {
+        input:
+            tested_fam      = RemoveHetFailsFromSubset.out_fam,
+            all_fam         = RemoveVariantsAfterHWE.out_fam,
+            tested_keep     = MakeAncestryKeepList.keep_list,
+            is_all_pops     = (ancestry_populations == "ALL"),
+            output_prefix   = output_prefix + "_het_merged_keep"
+    }
+
+    call PlinkFilter as MergeHetFiltered {
         input:
             bed_file      = RemoveVariantsAfterHWE.out_bed,
             bim_file      = RemoveVariantsAfterHWE.out_bim,
             fam_file      = RemoveVariantsAfterHWE.out_fam,
-            remove_list   = HeterozygosityCheck.het_fail_ind,
+            plink_args    = "--keep " + MergeHetKeepLists.merged_keep,
+            output_prefix = output_prefix + "_QC7",
+            plink_bin     = plink_bin
+    }
+
+    call CountBimFam as LogStep7 {
+        input:
+            bim_file = MergeHetFiltered.out_bim,
+            fam_file = MergeHetFiltered.out_fam,
+            label    = "Step 7   Heterozygosity filter (subset detection, subset removal)"
+    }
+
+    # -- Step 8: Restrict to selected chromosomes -------------------------------------
+    # Retains only chromosomes 1–22 for downstream association analysis.
+    # Sex chromosomes and mitochondrial SNPs require separate handling.
+    # Chromosome filtering args are configurable (e.g. "--chr 1-23" or "--chr 1-10,12-22").
+    call PlinkFilter as ChromosomeFilter {
+        input:
+            bed_file      = MergeHetFiltered.out_bed,
+            bim_file      = MergeHetFiltered.out_bim,
+            fam_file      = MergeHetFiltered.out_fam,
+            plink_args    = chr_args,
             output_prefix = output_prefix + "_QC8",
             plink_bin     = plink_bin
     }
 
     call CountBimFam as LogStep8 {
         input:
-            bim_file = RemoveHetFails.out_bim,
-            fam_file = RemoveHetFails.out_fam,
-            label    = "Step 8   Heterozygosity filter"
-    }
-
-    # -- Step 9: Restrict to selected chromosomes -------------------------------------
-    # Retains only chromosomes 1–22 for downstream association analysis.
-    # Sex chromosomes and mitochondrial SNPs require separate handling.
-    # Chromosome filtering args are configurable (e.g. "--chr 1-23" or "--chr 1-10,12-22").
-    call PlinkFilter as ChromosomeFilter {
-        input:
-            bed_file      = RemoveHetFails.out_bed,
-            bim_file      = RemoveHetFails.out_bim,
-            fam_file      = RemoveHetFails.out_fam,
-            plink_args    = chr_args,
-            output_prefix = output_prefix + "_QC9",
-            plink_bin     = plink_bin
-    }
-
-    call CountBimFam as LogStep9 {
-        input:
             bim_file = ChromosomeFilter.out_bim,
             fam_file = ChromosomeFilter.out_fam,
-            label    = "Step 9   Chromosome filter"
+            label    = "Step 8   Chromosome filter"
     }
 
-    # -- Step 10: Relatedness filtering -------------------------------------
+    # -- Step 9: Relatedness filtering -------------------------------------
     # Identifies cryptically related samples using two methods:
     #   • pi-hat (PLINK --genome): proportion of IBD alleles shared
     #   • KING kinship coefficient (PLINK2 --king-cutoff): more robust in
@@ -476,23 +545,23 @@ workflow genotype_qc_preimputation {
         prune_in      = LdPruningRelatedness.prune_in,
         pihat_min     = pihat_min,
         king_cutoff   = king_cutoff,
-        output_prefix = output_prefix + "_QC10",
+        output_prefix = output_prefix + "_QC9",
         plink_bin     = plink_bin,
         plink2_bin    = plink2_bin
     }
 
 
-    call CountBimFam as LogStep10 {
+    call CountBimFam as LogStep9 {
     input:
         bim_file = ChromosomeFilter.out_bim,
         fam_file = ChromosomeFilter.out_fam,
-        label    = "Step 10   Relatedness filter (KING)"
+        label    = "Step 9   Relatedness filter (KING)"
     }
 
-String relatedness_log_line = LogStep10.line
+String relatedness_log_line = LogStep9.line
 
 
-    # -- Step 11: Prepare for TOPMed imputation ----------------------------
+    # -- Step 10: Prepare for TOPMed imputation ----------------------------
     # Aligns strand orientation to the TOPMed reference panel using Will
     # Rayner's check-bim script. Removes SNPs not in the reference, ambiguous
     # A/T and C/G SNPs that cannot be strand-resolved, and SNPs with large
@@ -504,7 +573,7 @@ String relatedness_log_line = LogStep10.line
     call VariantsPerChromosome as FinalVariantsPerChromosome {
         input:
             bim_file = select_first([ChromosomeFilter.out_bim, ChromosomeFilter.out_bim]),
-            label    = "Step 10b Variants per chromosome (pre-imputation)"
+            label    = "Step 10a Variants per chromosome (pre-imputation)"
     }
 
     call PrepareForImputation {
@@ -539,8 +608,8 @@ String relatedness_log_line = LogStep10.line
             LogStep5.line,
             LogStep6.line,
             LdPruningHet.log_line,
+            LogStep7.line,
             LogStep8.line,
-            LogStep9.line,
             relatedness_log_line,
             FinalVariantsPerChromosome.log_line
         ],
