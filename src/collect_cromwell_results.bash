@@ -95,8 +95,7 @@ echo "Copying heterozygosity reports..."
 CALL="$BASE/call-HeterozygosityCheck/execution"
 cp "$CALL"/*.het "$OUTDIR/reports/"
 cp "$CALL"/*.png "$OUTDIR/plots/" 2>/dev/null || true
-CALL="$BASE/call-RemoveHetFailsFromSubset/execution"
-cp "$CALL"/*.txt "$OUTDIR/reports/het_fail_samples.txt" 2>/dev/null || true
+cp "$CALL"/het_fail_ind.txt "$OUTDIR/reports/het_fail_samples.txt" 2>/dev/null || true
 
 # -- Relatedness report (step 9 - RelatednessCheck) - skipped if run_relatedness_check=false
 echo "Copying relatedness reports (if present)..."
@@ -105,6 +104,11 @@ if [ -d "$CALL" ]; then
     cp "$CALL"/*.genome "$OUTDIR/reports/" 2>/dev/null || true
     cp "$CALL"/*.king.cutoff.out.id "$OUTDIR/reports/relatedness_flagged_samples.txt" 2>/dev/null || true
 fi
+
+# -- LD-pruned SNP list used for ancestry PCA (step 3b - LdPruningPCA) --------
+echo "Copying PCA LD-pruned SNP list..."
+CALL="$BASE/call-LdPruningPCA/execution"
+[ -d "$CALL" ] && cp "$CALL"/*.prune.in "$OUTDIR/pca/" 2>/dev/null || true
 
 # -- Ancestry PCA against 1000 Genomes & ancestry assignments -----
 echo "Copying ancestry PCA results and assignments..."

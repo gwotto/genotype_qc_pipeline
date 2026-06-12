@@ -72,12 +72,8 @@ See `doc/pipeline.md` for complete output file descriptions.
 
 ## Helper Script
 
-A download helper script `src/download_resources.sh` downloads the high-LD-regions and HRC reference frequency files:
+A download helper script `src/download_resources.sh` downloads the high-LD-regions and HRC reference frequency files.
 
-```bash
-cd ref/
-bash ../src/download_resources.sh
-```
 
 ## File Structure
 

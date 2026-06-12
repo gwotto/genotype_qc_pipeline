@@ -122,7 +122,7 @@ workflow genotype_qc_preimputation {
 
     }
 
-    String pipeline_version = "1.0.1"
+    String pipeline_version = "2.0"
 
     # -- Step 0: Convert text format to binary (skipped if bed/bim/fam provided) --
     # PLINK binary format is faster for all downstream steps.
@@ -275,6 +275,26 @@ workflow genotype_qc_preimputation {
         "Step 3   Sex check                            [skipped - no X SNPs]"
     ])
 
+### TODO: Relatedness check here. Run PCA without related samples
+
+    # -- Step 3b: LD pruning for ancestry PCA ---------------------------------
+    # Generates a set of approximately independent SNPs for use in PCA.
+    # The 1000G reference panel should already be LD-pruned; this prunes the
+    # study data to a matching independent subset before the merge and PCA.
+    call LdPruning as LdPruningPCA {
+        input:
+            bed_file      = select_first([RemoveSexFails.out_bed, MindFilter.out_bed]),
+            bim_file      = select_first([RemoveSexFails.out_bim, MindFilter.out_bim]),
+            fam_file      = select_first([RemoveSexFails.out_fam, MindFilter.out_fam]),
+            ld_regions    = ld_regions,
+            ld_window_kb  = ld_window_kb,
+            ld_step       = ld_step,
+            ld_r2         = ld_r2,
+            output_prefix = output_prefix + "_indepSNP_pca",
+            label         = "Step 3b  LD pruning (ancestry PCA)",
+            plink_bin     = plink_bin
+    }
+
     # -- Step 4: Ancestry PCA against 1000 Genomes -----------------------
     # Merges the post-sex-check study data with the 1000G Phase 3 reference
     # panel and computes PCA jointly. Used to assign superpopulation ancestry
@@ -292,9 +312,10 @@ workflow genotype_qc_preimputation {
             n_pcs              = n_pcs,
             output_prefix      = output_prefix + "_ancestry_pca",
             plink_bin          = plink_bin,
-            plink2_bin         = plink2_bin,
-            rscript_bin        = rscript_bin,
-            ancestry_pca_plot_r = ancestry_pca_plot_r
+            plink2_bin          = plink2_bin,
+            rscript_bin         = rscript_bin,
+            ancestry_pca_plot_r = ancestry_pca_plot_r,
+            prune_in            = LdPruningPCA.prune_in
     }
 
     # --- Step 5: MAC filter (full cohort) ----------------------------------------
@@ -389,6 +410,7 @@ workflow genotype_qc_preimputation {
             ld_step       = ld_step,
             ld_r2         = ld_r2,
             output_prefix = output_prefix + "_indepSNP_het",
+            label         = "Step 7a  LD pruning (heterozygosity)",
             plink_bin     = plink_bin
     }
 
@@ -479,7 +501,7 @@ workflow genotype_qc_preimputation {
             label    = "Step 8   Chromosome filter"
     }
 
-    # -- Step 9: Relatedness filtering -------------------------------------
+    # -- Step 9: Relatedness tests -------------------------------------
     # Identifies cryptically related samples using two methods:
     #   • pi-hat (PLINK --genome): proportion of IBD alleles shared
     #   • KING kinship coefficient (PLINK2 --king-cutoff): more robust in
@@ -493,36 +515,36 @@ workflow genotype_qc_preimputation {
             bed_file      = ChromosomeFilter.out_bed,
             bim_file      = ChromosomeFilter.out_bim,
             fam_file      = ChromosomeFilter.out_fam,
-        ld_regions    = ld_regions,
-        ld_window_kb  = ld_window_kb,
-        ld_step       = ld_step,
-        ld_r2         = ld_r2,
-        output_prefix = output_prefix + "_indepSNP_related",
-        plink_bin     = plink_bin
+            ld_regions    = ld_regions,
+            ld_window_kb  = ld_window_kb,
+            ld_step       = ld_step,
+            ld_r2         = ld_r2,
+            output_prefix = output_prefix + "_indepSNP_related",
+            label         = "Step 9a  LD pruning (relatedness)",
+            plink_bin     = plink_bin
     }
 
     call RelatednessCheck {
-    input:
-        bed_file      = ChromosomeFilter.out_bed,
-        bim_file      = ChromosomeFilter.out_bim,
-        fam_file      = ChromosomeFilter.out_fam,
-        prune_in      = LdPruningRelatedness.prune_in,
-        pihat_min     = pihat_min,
-        king_cutoff   = king_cutoff,
-        output_prefix = output_prefix + "_QC9",
-        plink_bin     = plink_bin,
-        plink2_bin    = plink2_bin
+        input:
+            bed_file      = ChromosomeFilter.out_bed,
+            bim_file      = ChromosomeFilter.out_bim,
+            fam_file      = ChromosomeFilter.out_fam,
+            prune_in      = LdPruningRelatedness.prune_in,
+            pihat_min     = pihat_min,
+            king_cutoff   = king_cutoff,
+            output_prefix = output_prefix + "_QC9",
+            plink_bin     = plink_bin,
+            plink2_bin    = plink2_bin
     }
-
 
     call CountBimFam as LogStep9 {
-    input:
-        bim_file = ChromosomeFilter.out_bim,
-        fam_file = ChromosomeFilter.out_fam,
-        label    = "Step 9   Relatedness filter (KING)"
+        input:
+            bim_file = ChromosomeFilter.out_bim,
+            fam_file = ChromosomeFilter.out_fam,
+            label    = "Step 9   Relatedness check (flagged, not removed)"
     }
 
-String relatedness_log_line = LogStep9.line
+    String relatedness_log_line = LogStep9.line
 
 
     # -- Step 10: Prepare for TOPMed imputation ----------------------------
@@ -536,15 +558,15 @@ String relatedness_log_line = LogStep9.line
     # Report final per-chromosome variant counts before imputation prep
     call VariantsPerChromosome as FinalVariantsPerChromosome {
         input:
-            bim_file = select_first([ChromosomeFilter.out_bim, ChromosomeFilter.out_bim]),
+            bim_file = ChromosomeFilter.out_bim,
             label    = "Step 10a Variants per chromosome (pre-imputation)"
     }
 
     call PrepareForImputation {
         input:
-            bed_file        = select_first([ChromosomeFilter.out_bed, ChromosomeFilter.out_bed]),
-            bim_file        = select_first([ChromosomeFilter.out_bim, ChromosomeFilter.out_bim]),
-            fam_file        = select_first([ChromosomeFilter.out_fam, ChromosomeFilter.out_fam]),
+            bed_file        = ChromosomeFilter.out_bed,
+            bim_file        = ChromosomeFilter.out_bim,
+            fam_file        = ChromosomeFilter.out_fam,
             check_bim_pl    = check_bim_pl,
             hrc_ref_freq    = hrc_ref_freq,
             output_prefix   = output_prefix + "_imputation",
@@ -553,7 +575,7 @@ String relatedness_log_line = LogStep9.line
             bcftools_bin    = bcftools_bin,
             bgzip_bin       = bgzip_bin,
             tabix_bin       = tabix_bin
-}
+    }
 
 
     # -- Pipeline log ------------------------------------------------------
@@ -568,12 +590,14 @@ String relatedness_log_line = LogStep9.line
         InitialVariantsPerChromosome.log_lines,
         [
             sex_check_log_line,
+            LdPruningPCA.log_line,
             AncestryPCA.log_line,
             LogStep5.line,
             LogStep6.line,
             LdPruningHet.log_line,
             LogStep7.line,
             LogStep8.line,
+            LdPruningRelatedness.log_line,
             relatedness_log_line,
             FinalVariantsPerChromosome.log_line
         ],
@@ -596,9 +620,9 @@ String relatedness_log_line = LogStep9.line
         File pipeline_log = WriteLog.log
 
         # Final QC-passed dataset — use these for association testing
-        File final_bed = select_first([ChromosomeFilter.out_bed, ChromosomeFilter.out_bed])
-        File final_bim = select_first([ChromosomeFilter.out_bim, ChromosomeFilter.out_bim])
-        File final_fam = select_first([ChromosomeFilter.out_fam, ChromosomeFilter.out_fam])
+        File final_bed = ChromosomeFilter.out_bed
+        File final_bim = ChromosomeFilter.out_bim
+        File final_fam = ChromosomeFilter.out_fam
 
         # Sex check outputs (only present if X-chromosome SNPs exist)
         File? sexcheck_report = SexCheck.sexcheck_report
@@ -618,10 +642,11 @@ String relatedness_log_line = LogStep9.line
         File? pihat_genome       = RelatednessCheck.pihat_genome       # All pairs above pihat_min
         File? king_cutoff_out_id = RelatednessCheck.king_cutoff_out    # Samples removed by KING
 
-        # LD-pruned SNP lists (used in steps 8 & 10; useful for PCA too)
-        File prune_in  = LdPruningHet.prune_in
-        File prune_out = LdPruningHet.prune_out
-        File? related_prune_in = LdPruningRelatedness.prune_in
+        # LD-pruned SNP lists
+        File pca_prune_in      = LdPruningPCA.prune_in           # used for ancestry PCA
+        File prune_in          = LdPruningHet.prune_in           # used for heterozygosity check
+        File prune_out         = LdPruningHet.prune_out
+        File? related_prune_in = LdPruningRelatedness.prune_in   # used for relatedness check
 
         # Threshold sweep plot — shows SNP/sample retention across filtering thresholds
         File threshold_plot = ThresholdSweep.sweep_plot
@@ -767,30 +792,6 @@ task ConvertToBinary {
         runtime { maxRetries: 1 }
     }
 
-    ## -----------------------------------------------------------------------------
-    ## MergeSnpLists
-    ## Concatenate an array of SNP-list files and output a single unique, sorted
-    ## SNP exclude file suitable for PLINK --exclude.
-    ## -----------------------------------------------------------------------------
-    task MergeSnpLists {
-        input {
-            Array[File] snp_lists
-            String output_prefix
-        }
-        command <<<
-            set -euo pipefail
-            > combined.tmp
-            for f in ~{sep=' ' snp_lists}; do
-                cat "$f" >> combined.tmp
-            done
-            sort -u combined.tmp > ~{output_prefix}_remove_snps_union.txt
-        >>>
-        output {
-            File union_snps = "~{output_prefix}_remove_snps_union.txt"
-        }
-        runtime { maxRetries: 1 }
-    }
-
 
 ## -----------------------------------------------------------------------------
 ## HandleDuplicates
@@ -893,7 +894,7 @@ task ThresholdSweep {
                 --fam ~{fam_file} \
                 --geno $T \
                 --make-bed \
-                --out tmp_geno_$T > /dev/null 2>&1
+                --out tmp_geno_$T --silent
             N=$(wc -l < tmp_geno_$T.bim)
             echo "$T $N" >> geno_sweep.txt
         done
@@ -906,7 +907,7 @@ task ThresholdSweep {
                 --fam ~{fam_file} \
                 --mind $T \
                 --make-bed \
-                --out tmp_mind_$T > /dev/null 2>&1
+                --out tmp_mind_$T --silent
             N=$(wc -l < tmp_mind_$T.fam)
             echo "$T $N" >> mind_sweep.txt
         done
@@ -965,79 +966,6 @@ task MergeKeepLists {
 }
 
 
-# Threshold sweep analysis tasks
-task GenoSweep {
-    input {
-        File bed_file
-        File bim_file
-        File fam_file
-        String output_prefix
-        String plink_bin
-    }
-    command <<<
-        set -euo pipefail
-        echo "threshold	n_snps" > ~{output_prefix}_geno_sweep.txt
-        for threshold in 0.01 0.02 0.05 0.10 0.20; do
-            ~{plink_bin} --bed ~{bed_file} --bim ~{bim_file} --fam ~{fam_file} --geno $threshold --make-just-bim --out temp_geno_$threshold --silent 2>/dev/null || true
-            if [ -f "temp_geno_$threshold.bim" ]; then
-                n_snps=$(wc -l < temp_geno_$threshold.bim)
-                echo -e "$threshold	$n_snps" >> ~{output_prefix}_geno_sweep.txt
-            fi
-        done
-        rm -f temp_geno_*.bed temp_geno_*.bim temp_geno_*.fam temp_geno_*.log
-    >>>
-    output { File geno_sweep = "~{output_prefix}_geno_sweep.txt" }
-    runtime { maxRetries: 1 }
-}
-
-task MindSweep {
-    input {
-        File bed_file
-        File bim_file
-        File fam_file
-        String output_prefix
-        String plink_bin
-    }
-    command <<<
-        set -euo pipefail
-        echo "threshold	n_samples" > ~{output_prefix}_mind_sweep.txt
-        for threshold in 0.01 0.02 0.05 0.10 0.20; do
-            ~{plink_bin} --bed ~{bed_file} --bim ~{bim_file} --fam ~{fam_file} --mind $threshold --make-just-fam --out temp_mind_$threshold --silent 2>/dev/null || true
-            if [ -f "temp_mind_$threshold.fam" ]; then
-                n_samples=$(wc -l < temp_mind_$threshold.fam)
-                echo -e "$threshold	$n_samples" >> ~{output_prefix}_mind_sweep.txt
-            fi
-        done
-        rm -f temp_mind_*.bed temp_mind_*.bim temp_mind_*.fam temp_mind_*.log
-    >>>
-    output { File mind_sweep = "~{output_prefix}_mind_sweep.txt" }
-    runtime { maxRetries: 1 }
-}
-
-task ThresholdPlot {
-    input {
-        File geno_sweep
-        File mind_sweep
-        Float geno_threshold
-        Float mind_threshold
-        File threshold_plot_r
-        String rscript_bin
-        String output_prefix
-    }
-    command <<<
-        set -euo pipefail
-        cp ~{geno_sweep} geno_sweep.txt
-        cp ~{mind_sweep} mind_sweep.txt
-        ~{rscript_bin} ~{threshold_plot_r} ~{geno_threshold} ~{mind_threshold}
-        if [ -f "threshold_plot.png" ]; then
-            mv threshold_plot.png ~{output_prefix}_threshold_plot.png
-        fi
-    >>>
-    output { File sweep_plot = "~{output_prefix}_threshold_plot.png" }
-    runtime { maxRetries: 1 }
-}
-
-
 
 ## -----------------------------------------------------------------------------
 ## RemoveSamples
@@ -1084,6 +1012,7 @@ task CountXSNPs {
         File bim_file   # PLINK .bim — chromosome is column 1
     }
     command <<<
+        set -euo pipefail
         # Count X-chromosome SNPs in both old (X) and new (23) notation
         x_old=$(awk '$1=="X"{print}' ~{bim_file} | wc -l)
         x_new=$(awk '$1=="23"{print}' ~{bim_file} | wc -l)
@@ -1130,9 +1059,9 @@ task VariantsPerChromosome {
         for CHR in $CHROMS; do
             count=$(awk -v chr="$CHR" '$1==chr' ~{bim_file} | wc -l)
             if [ "$count" -gt 0 ]; then
-                label=$(printf "Chromosome %2d:" "$CHR")
-                printf "  %-20s %8d variants\n" "$label" "$count" >> variants_per_chr_report.txt
-                printf "  %-20s %8d variants\n" "$label" "$count" >> log_lines.txt
+                chr_label=$(printf "Chromosome %2d:" "$CHR")
+                printf "  %-20s %8d variants\n" "$chr_label" "$count" >> variants_per_chr_report.txt
+                printf "  %-20s %8d variants\n" "$chr_label" "$count" >> log_lines.txt
             fi
             total_autosomes=$((total_autosomes + count))
         done
@@ -1286,6 +1215,7 @@ task LdPruning {
         Int    ld_step        # Step size in number of SNPs
         Float  ld_r2          # r² threshold; SNP pairs above this are pruned
         String output_prefix
+        String label = "LD pruning"   # Label for the pipeline log line
         String plink_bin
     }
     command <<<
@@ -1299,7 +1229,7 @@ task LdPruning {
             --out ~{output_prefix}
         n_pruned=$(wc -l < ~{output_prefix}.prune.in)
         printf "%-42s  %7d independent SNPs\n" \
-            "Step 6   LD pruning" "$n_pruned" > log_line.txt
+            "~{label}" "$n_pruned" > log_line.txt
     >>>
     output {
         File   prune_in  = "~{output_prefix}.prune.in"   # Independent SNPs
@@ -1395,7 +1325,8 @@ task RelatednessCheck {
             --bim ~{bim_file} \
             --fam ~{fam_file} \
             --extract ~{prune_in} \
-            --king-cutoff ~{king_cutoff}
+            --king-cutoff ~{king_cutoff} \
+            --out plink2
     >>>
     output {
         File pihat_genome    = "~{output_prefix}_pihat_min~{pihat_min}.genome"  # IBD pairs table
@@ -1441,21 +1372,11 @@ task MacFilter {
             --freq \
             --out freq_before
 
-        # Remove monomorphic SNPs (MAC exactly 0)
-        # is also implicitely done by the next step, so this seems redundant
+        # Apply MAC threshold (also removes monomorphic SNPs since mac_threshold >= 1)
         ~{plink_bin} \
             --bed ~{bed_file} \
             --bim ~{bim_file} \
             --fam ~{fam_file} \
-            --mac 1 \
-            --make-bed \
-            --out tmp_no_monomorphic
-
-        # Apply the chosen MAC threshold
-        ~{plink_bin} \
-            --bed tmp_no_monomorphic.bed \
-            --bim tmp_no_monomorphic.bim \
-            --fam tmp_no_monomorphic.fam \
             --mac ~{mac_threshold} \
             --make-bed \
             --out ~{output_prefix}
@@ -1488,7 +1409,8 @@ task MacFilter {
 ## joint PCA to assign superpopulation ancestry labels to study samples.
 ##
 ## Steps:
-##   1. Extract SNPs present in both study and 1000G reference (.bim overlap)
+##   1. Restrict to autosomal SNPs (chr 1-22); intersect by rsID, filter to
+##      positionally concordant SNPs, then intersect with LD-pruned list
 ##   2. Merge study data with 1000G using the overlapping SNP list
 ##      - Strand flips are attempted automatically; unresolvable SNPs removed
 ##   3. Run PCA on the merged dataset
@@ -1506,10 +1428,11 @@ task AncestryPCA {
         File   bed_file
         File   bim_file
         File   fam_file
-        File   ref_bed          # 1000G reference .bed
-        File   ref_bim          # 1000G reference .bim
-        File   ref_fam          # 1000G reference .fam
-        File   ref_psam         # 1000G sample metadata with SuperPop column
+        File   ref_bed              # 1000G reference .bed
+        File   ref_bim              # 1000G reference .bim
+        File   ref_fam              # 1000G reference .fam
+        File   ref_psam             # 1000G sample metadata with SuperPop column
+        File   prune_in             # LD-pruned SNP list from LdPruningPCA
         Int    n_pcs
         String output_prefix
         String plink_bin
@@ -1520,19 +1443,42 @@ task AncestryPCA {
     command <<<
         set -euo pipefail
 
-        # Step 1: find SNPs present in both study and 1000G bim files
-        awk '{print $2}' ~{bim_file} | sort > study_snps.txt
-        awk '{print $2}' ~{ref_bim}  | sort > ref_snps.txt
-        comm -12 study_snps.txt ref_snps.txt > overlap_snps.txt
+        # Step 1: find autosomal SNPs (chr 1-22 only) present in both datasets
+        # Non-autosomal SNPs are excluded: sex-chr heterozygosity and PAR effects
+        # distort principal components and are uninformative for ancestry inference.
 
-        echo "Overlapping SNPs: $(wc -l < overlap_snps.txt)"
+        # Phase 1: rsID intersection restricted to autosomes
+        awk '$1+0 >= 1 && $1+0 <= 22 {print $2}' ~{bim_file} | sort > study_snps.txt
+        awk '$1+0 >= 1 && $1+0 <= 22 {print $2}' ~{ref_bim}  | sort > ref_snps.txt
+        comm -12 study_snps.txt ref_snps.txt > rsid_overlap.txt
+        n_rsid=$(wc -l < rsid_overlap.txt)
+        echo "Autosomal SNPs overlapping by rsID: $n_rsid"
 
-        # Step 2: extract overlapping SNPs from both datasets
+        # Phase 2: filter to positionally concordant SNPs (same chr:pos in study and ref)
+        # Guards against rsID collisions or genome build mismatches.
+        awk '$1+0 >= 1 && $1+0 <= 22 {print $2, $1"_"$4}' ~{bim_file} | sort -k1,1 > study_id_pos.txt
+        awk '$1+0 >= 1 && $1+0 <= 22 {print $2, $1"_"$4}' ~{ref_bim}  | sort -k1,1 > ref_id_pos.txt
+        join -1 1 -2 1 study_id_pos.txt ref_id_pos.txt \
+            | awk '$2 == $3 {print $1}' | sort > concordant_snps.txt
+        n_concordant=$(wc -l < concordant_snps.txt)
+        n_discord=$(( n_rsid - n_concordant ))
+        if [ "$n_discord" -gt 0 ]; then
+            echo "WARNING: Excluded $n_discord rsID-matched SNPs with discordant chr:pos (build mismatch?)" >&2
+        fi
+
+        # Phase 3: intersect with LD-pruned SNP list (restricts PCA to ~independent SNPs)
+        sort ~{prune_in} > pruned_sorted.txt
+        comm -12 concordant_snps.txt pruned_sorted.txt > overlap_snps.txt
+        n_final=$(wc -l < overlap_snps.txt)
+        echo "Overlapping SNPs after LD pruning: $n_final"
+
+        # Step 2: extract autosomal overlapping SNPs from both datasets
         ~{plink_bin} \
             --bed ~{bed_file} \
             --bim ~{bim_file} \
             --fam ~{fam_file} \
             --extract overlap_snps.txt \
+            --chr 1-22 \
             --make-bed \
             --out study_overlap
 
@@ -1541,6 +1487,7 @@ task AncestryPCA {
             --bim ~{ref_bim} \
             --fam ~{ref_fam} \
             --extract overlap_snps.txt \
+            --chr 1-22 \
             --make-bed \
             --out ref_overlap
 
@@ -1617,7 +1564,10 @@ task AncestryPCA {
             ~{n_pcs} \
             ~{output_prefix}
 
-        # Create a single-line summary of ancestry assignments for the pipeline log
+        # Write pipeline log lines: SNP filter chain then ancestry assignment counts
+        printf "%-42s  rsID: %d  concordant: %d  LD-pruned: %d\n" \
+            "Step 4   Ancestry PCA (SNPs)" "$n_rsid" "$n_concordant" "$n_final" > log_line.txt
+
         if [ -f ~{output_prefix}_ancestry_assignments.tsv ]; then
             counts=$(awk -F'\t' '
                 NR==1 { for(i=1;i<=NF;i++) hdr[$i]=i; \
@@ -1629,9 +1579,9 @@ task AncestryPCA {
                 END { sep=""; for (k in count) { printf "%s%s:%d", sep, k, count[k]; sep=" " } }
             ' ~{output_prefix}_ancestry_assignments.tsv)
 
-            printf "%-42s  %s\n" "Step 4   Ancestry PCA" "$counts" > log_line.txt
+            printf "%-42s  %s\n" "Step 4   Ancestry PCA (ancestry)" "$counts" >> log_line.txt
         else
-            printf "%-42s  %s\n" "Step 4   Ancestry PCA" "[no assignments]" > log_line.txt
+            printf "%-42s  %s\n" "Step 4   Ancestry PCA (ancestry)" "[no assignments]" >> log_line.txt
         fi
     >>>
     output {
