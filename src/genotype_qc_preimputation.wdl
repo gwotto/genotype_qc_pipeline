@@ -319,6 +319,11 @@ workflow genotype_qc_preimputation {
     }
 
     # --- Step 6: HWE filter (subset detection, full cohort removal) -----------
+    # Population structure can cause deviation from HWE after pooling (Wahlund effect).
+    # Here, the ancestry group(s) are chosen by the user in the config file, e.g. 
+    # "EUR" or "ALL". The selected population is used to detect variants deviating from 
+    # HWE. These SNPs are then removed from the entire cohort.
+    
     # Build ancestry keep-list for HWE and heterozygosity subsetting
     call MakeAncestryKeepList {
         input:
@@ -388,8 +393,9 @@ workflow genotype_qc_preimputation {
     }
 
     # --- Step 7: Heterozygosity filter (subset detection, subset removal) ---
-    # Detect heterozygosity outliers only in user-defined subpopulation(s)
-    # Remove failed samples only from that subpopulation (keep other populations intact)
+    # Detect heterozygosity outliers only in user-defined subpopulation(s). Different 
+    # and admixed ancestries could have heterozygosity rates that might count as 
+    # outlyers in the selected population, but should not be removed.
     
     call PlinkFilter as SubsetAncestry_HET {
         input:
@@ -716,11 +722,20 @@ task ConvertToBinary {
                 }' ~{assignments} > selected_iids.txt
 
                 # Map IIDs back to real FIDs using the provided .fam (IID -> FID)
+                # 
                 awk 'NR==FNR{iids[$0]=1; next} ($2 in iids){print $1, $2}' selected_iids.txt ~{fam_file} > "$OUT" || true
                 rm -f selected_iids.txt || true
             fi
 
-            wc -l < "$OUT" > keep_count.txt
+            # Validate that keep-list is not empty
+            n_lines=$(wc -l < "$OUT")
+            if [ "$n_lines" -eq 0 ]; then
+                echo "ERROR: No samples found for populations: $POPS" >&2
+                echo "Check that population names match those in the ancestry assignments file" >&2
+                exit 1
+            fi
+            
+            echo $n_lines > keep_count.txt
         >>>
         output {
             File keep_list = "~{output_prefix}_ancestry_keep.txt"

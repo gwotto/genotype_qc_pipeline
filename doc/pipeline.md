@@ -1,532 +1,269 @@
-# GWAS Genotype QC Pipeline
+# Genotype QC Pre-Imputation Pipeline
 
-A WDL workflow that cleans raw genotype array data before genome-wide association analysis. It combines published workflows and follows best practices in the field combining PLINK commands with custom R scripts for diagnostics and sample filtering. The pipeline is designed to be modular and adaptable to different datasets and QC thresholds. It follows a standard set of QC steps combining methods from Anderson et al. (2010) and Marees et al. (2018), as well from the pipeline developed for the DIVERGE study by the Kuchenbaaecker lab at UCL (https://github.com/DIVERGEstudy). 
+## Overview
 
----
+This WDL workflow performs comprehensive quality control (QC) on genotype data before imputation. It implements a multi-stage filtering approach that balances data retention with stringency, including ancestry-aware filtering and relatedness detection.
 
-## What this pipeline does
+**Current Version:** 2.0 (Updated June 2026)
 
-Raw SNP array data contains errors from genotyping noise, sample mixups,
-and population structure. This pipeline removes those problems in a fixed
-order, producing a dataset suitable for GWAS.
+## Pipeline Steps
 
-```
-Input genotypes (bed/bim/fam or ped/map)
-    │
-    ├─ Step 0  : Convert to binary format (if needed)
-    ├─ Step 0b : Remove duplicate sample IDs
-    ├─ Step 1  : Remove low-quality SNPs      --geno (missingness per SNP)
-    ├─ Step 2  : Remove low-quality samples   --mind (missingness per sample)
-    ├─ Step 2b : Variants per chromosome      report after sample filtering
-    ├─ Step 3  : Sex check                    flag sample swaps / genotyping errors
-    │                                         (samples with unknown sex retained)
-    ├─ Step 4  : MAC filter                   remove monomorphic & rare SNPs
-    ├─ Step 5  : Hardy-Weinberg filter        remove SNPs that fail equilibrium test
-    ├─ Step 6  : LD pruning                   select independent SNPs (used in steps 7 & 9)
-    ├─ Step 7  : Heterozygosity filter        remove contaminated / inbred samples
-    ├─ Step 8  : Chromosome filter            configurable via chr_args (e.g. --chr 1-22)
-    ├─ Step 9  : Relatedness filter           remove one of each related pair (optional)
-    ├─ Step 10 : PCA                          diagnostic population structure check
-    ├─ Step 10b: Variants per chromosome      report at end of pipeline
-    └─ Step 11 : Prepare for imputation       strand-align and export per-chr VCFs
-                                                    │
-                                              Final QC dataset
-```
+### Step 0: Data Preparation
+- **ConvertToBinary** (optional): Converts PLINK text format (ped/map) to binary format (bed/bim/fam)
+- **HandleDuplicates**: Resolves duplicate sample IDs and prepares data for analysis
 
-The pipeline graph:
+### Step 1: SNP Missingness Filter (--geno)
+- Removes SNPs with ≥X% missing genotypes across samples
+- Threshold: `geno_threshold` (default: 0.03 = 3%)
+- **Rationale**: Unreliable genotype calls
 
-![genotype_qc_preimputation pipeline graph](genotype_qc_preimputation.png "genotype_qc_preimputation pipeline graph")
+### Step 2: Sample Missingness Filter (--mind)
+- Removes samples with ≥X% missing genotypes
+- Threshold: `mind_threshold` (default: 0.05 = 5%)
+- **Rationale**: Low-quality samples
 
+### **Threshold Sweep Visualization** (Informational)
+- Runs PLINK with multiple thresholds (0.01, 0.02, 0.05, 0.10, 0.20) for both geno and mind
+- Produces plots showing SNP and sample retention across thresholds
+- **Purpose**: Helps validate that chosen thresholds represent reasonable trade-offs
+- **Output**: `threshold_plot.png`
 
-A flow diagram of the pipeline:
+### Step 3: Sex Check
+- Validates reported vs. inferred sex using X-chromosome heterozygosity
+- **Conditional**: Only runs if X-chromosome SNPs are present
+- Removes samples with inconsistent sex assignments
+- **Output**: Sex check report and list of failed samples (if any)
 
-![genotype_qc_preimputation pipeline flow diagram](genotype_qc_preimputation_mm.png "genotype_qc_preimputation pipeline flow diagram")
+### Step 4: Ancestry PCA Against 1000 Genomes
+- Projects study samples onto 1000 Genomes Phase 3 principal components
+- Assigns superpopulation labels (EUR, AFR, EAS, SAS, AMR) to each sample
+- **Inputs Required**:
+  - 1000G reference panel (bed/bim/fam format)
+  - 1000G sample metadata with superpopulation labels
+- **Outputs**:
+  - Per-sample superpopulation assignments: `ancestry_assignments.tsv`
+  - PCA eigenvectors and eigenvalues
+  - PCA plot with study samples overlaid on 1000G
 
----
+### Step 5: MAC Filter (Full Cohort)
+- Removes monomorphic SNPs and variants with minor allele count < X
+- Threshold: `mac_threshold` (default: 50)
+- **Rationale**: Rare variants tested on full cohort (not ancestry subsets) because rarity is a cohort-level property
+- **Output**: MAC distribution plot with allele frequencies (not counts)
 
-## Step-by-step explanation
+### Step 6: Hardy-Weinberg Equilibrium Filter (Ancestry Subset Detection, Full Cohort Removal)
+- **Detection**: Tests HWE separately within each user-specified ancestry group
+- **Rationale**: Allele frequencies differ by ancestry; testing on subset avoids false HWE violations in admixed samples
+- **Removal**: Removes failed SNPs from ENTIRE cohort (prevents artifacts in any ancestry group)
+- Threshold: `hwe_pvalue` (default: 1e-6)
+- **Inputs**: 
+  - `ancestry_populations`: Comma-separated list (e.g., "EUR,AFR") or "ALL" for entire cohort
+  - Ancestry assignments from Step 4
 
-### Step 0 — Format conversion *(optional)*
-If you supply text-format `.ped`/`.map` files, PLINK converts them to binary
-`.bed`/`.bim`/`.fam`. Binary format is faster for every subsequent step.
-Skipped if you supply binary files directly.
+### Step 7a: LD Pruning (Helper for Heterozygosity)
+- Generates independent SNP list using specified LD threshold
+- Used only as input for heterozygosity detection (Step 7b)
+- Parameters: `ld_r2` (default: 0.1), `ld_window_kb` (default: 50), `ld_step` (default: 5)
 
-### Step 0b — Duplicate sample IDs
-PLINK requires unique sample identifiers. An R script scans the `.fam` file
-and appends a numeric suffix to any duplicated IDs.
+### Step 7b: Heterozygosity Outlier Removal (Ancestry Subset Detection, Subset Removal)
+- **Detection**: Identifies samples with heterozygosity >3 SD from mean within ancestry group
+- **Removal**: Removes outlier SAMPLES (not variants) only from tested ancestry group
+- **Merge**: Combines het-filtered ancestry group with untested populations
+- **Rationale**: Heterozygosity is sample-level; removing from subset avoids discarding samples from untested groups
+- **Outputs**: 
+  - Per-sample heterozygosity rates
+  - Heterozygosity plots and outlier list
 
-### Step 1 — SNP missingness (`--geno`)
-SNPs with too many missing genotype calls across samples are removed.
-A typical threshold is 5% missing (`geno_threshold = 0.05`).
-Highly missing SNPs usually reflect a failed assay probe.
+### Step 8: Chromosome Filter
+- Restricts analysis to specified chromosomes (default: 1-23, autosomes + X)
+- Parameter: `chr_args` (e.g., "--chr 1-22" for autosomes only)
 
-### Step 2 — Sample missingness (`--mind`)
-Samples with too many missing genotype calls across SNPs are removed.
-A typical threshold is also 5% (`mind_threshold = 0.05`).
-Highly missing samples reflect poor DNA quality or plate failures.
+### Step 9: Relatedness Check (KING)
+- Detects cryptic relatedness using KING algorithm
+- **Important**: Samples are FLAGGED, not automatically removed
+- Threshold: `king_cutoff` (default: 0.0884 ≈ 3rd-degree relative)
+- Threshold: `pihat_min` (default: 0.2 for IBD pairs)
+- **Outputs**:
+  - Relatedness report: `king_cutoff_related_samples.txt` (samples to optionally remove)
+  - Detailed IBD pairs: `pihat.genome`
+- **User Decision**: Users can manually remove related samples using this file in downstream PLINK association tests
 
-### Step 3 — Sex check
-PLINK uses X-chromosome heterozygosity to infer biological sex and compares
-it to the reported sex in the `.fam` file. Discordant samples are removed —
-they likely represent sample swaps or labelling errors. Samples with unknown
-sex (coded as `0` in the `.fam` file) are retained, as their sex may be
-legitimately missing rather than erroneous.  
-Skipped automatically if the dataset has no X-chromosome SNPs (chromosome 23
-in PLINK2 encoding).
+### Step 10: Prepare for Imputation
+- Harmonizes SNPs with imputation reference (HRC or TOPMed)
+- Checks allele strand, ref/alt assignments
+- Creates VCFs per chromosome (GRCh37/GRCh38 compatible)
+- Outputs ready for imputation server submission
 
-### Step 4 — MAC filter
-Removes monomorphic SNPs (MAC = 0) and SNPs below `mac_threshold` (minor
-allele count). Monomorphic SNPs carry no association signal and can cause
-numerical issues in downstream analyses. A typical pre-imputation threshold
-is 50 observations (`mac_threshold = 50`), which is more robust than a fixed
-frequency threshold because it accounts for the actual sample size. MAC
-filtering should be repeated after imputation on the imputed dataset.
+## Configuration File
 
-This step is placed before HWE testing and LD pruning for two reasons:
-- HWE tests are unreliable for rare variants due to low expected counts;
-  applying the MAC filter first means HWE is tested only where it has power.
-- LD pruning and heterozygosity checks are more stable when based on common
-  variants only.
+### Location
+`config/genotype_qc_preimputation_inputs.json`
 
-An R script produces a MAC distribution plot and a before/after barplot for
-quality inspection. The frequency files (`maf_freq_before`, `maf_freq_after`)
-are QC diagnostics; the allele frequency file used for imputation strand
-alignment (step 11) is computed separately on the final post-relatedness
-dataset.
+### Input Variables (35 total)
 
-### Step 5 — Hardy-Weinberg equilibrium (HWE)
-SNPs that deviate significantly from HWE are removed. Extreme deviation
-(typical threshold p < 1×10⁻⁶, `hwe_pvalue = 1e-6`) usually indicates
-genotyping error rather than true selection. Applied after the MAF filter
-(step 4) so that HWE is only tested on common variants, where the test has
-reliable power.
+#### Data Input Paths
+- **ped_file**: Path to PLINK PED file (text genotypes) - use if data is in text format
+- **map_file**: Path to PLINK MAP file - use with ped_file
+- **bed_file**: Path to PLINK BED file (binary) - use if data is already binary
+- **bim_file**: Path to PLINK BIM file - use with bed_file
+- **fam_file**: Path to PLINK FAM file - use with bed_file
+- **Note**: Provide EITHER (ped_file + map_file) OR (bed_file + bim_file + fam_file)
 
-### Step 6 — LD pruning
-Generates a list of approximately independent SNPs by removing pairs in high
-linkage disequilibrium (correlated because they are physically close on the
-chromosome). This pruned SNP set is not used to filter the dataset here —
-it is only used as input to steps 7 and 9 to ensure those analyses are not
-biased by correlated markers. The same list is useful for PCA.
+#### Output Settings
+- **output_prefix**: Prefix for all output files (default: "array_qc")
 
-| Parameter | Meaning | Typical value |
-|---|---|---|
-| `ld_window_kb` | Sliding window size | 50 kb |
-| `ld_step` | Step size (SNPs) | 5 |
-| `ld_r2` | r² threshold | 0.2 |
+#### QC Thresholds
+- **geno_threshold**: Max SNP missingness (0.0-1.0, default: 0.03 = 3%)
+- **mind_threshold**: Max sample missingness (0.0-1.0, default: 0.05 = 5%)
+- **hwe_pvalue**: Min HWE p-value to retain SNP (default: 1e-6)
+- **mac_threshold**: Min minor allele count (default: 50)
+- **pihat_min**: Min IBD coefficient for relatedness (default: 0.2)
+- **king_cutoff**: KING kinship cutoff (default: 0.0884 for 3rd degree)
 
-High-LD genomic regions (e.g. the MHC locus on chr 6, the chr 8 inversion)
-are excluded before pruning so they do not dominate the independent SNP set.
-The exclusion list is supplied via the `ld_regions` input file. The hg19/GRCh37
-region list can be downloaded using the helper script above. The original
-data were compiled by Anderson et al. (2010) and are maintained in the
-plinkQC package by Syed et al. (2025). If your data are aligned to a different
-genome build, supply the appropriate coordinates instead.
+#### LD Pruning Parameters
+- **ld_r2**: Max r² for LD pruning (default: 0.1)
+- **ld_window_kb**: Sliding window size in kb (default: 50)
+- **ld_step**: Window step size in SNPs (default: 5)
+- **ld_regions**: Path to file with high-LD regions to exclude (BED format)
 
-### Step 7 — Heterozygosity check
-Using the LD-pruned SNPs, per-sample heterozygosity rates are computed.
-Outliers beyond ±3 SD of the cohort mean are flagged and removed.
+#### Ancestry & Population Selection
+- **ancestry_populations**: Population(s) for ancestry-aware filtering
+  - Format: Comma-separated list (e.g., "EUR,AFR") or "ALL"
+  - Default: "ALL"
+  - **Important**: Values must match superpopulation labels in 1000G assignments (EUR, AFR, EAS, SAS, AMR)
+  - **Effect**: MAC and HWE detection will only use specified populations
 
-- High heterozygosity: possible sample contamination (DNA from two individuals)
-- Low heterozygosity: possible inbreeding or an accidental sample duplicate
+#### Reference Files (1000 Genomes)
+- **ref_1kg_bed/bim/fam**: Path to 1000G Phase 3 reference panel (binary PLINK format)
+  - Should be LD-pruned and filtered to biallelic SNPs only
+- **ref_1kg_psam**: 1000G sample metadata file with SuperPop labels (EUR, AFR, EAS, SAS, AMR)
+- **n_pcs**: Number of principal components to compute (default: 10)
 
-The R scripts for this step (`check_heterozygosity_rate.R` and
-`heterozygosity_outliers_list.R`) are taken from the practical GWAS tutorial
-by Marees et al. (2018).
+#### Imputation Reference
+- **hrc_ref_freq**: Path to HRC or 1000G allele frequency file (typically .gz)
+  - Example: HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz
+- **check_bim_pl**: Path to Will Rayner's HRC-1000G-check-bim.pl script
 
-### Step 8 — Chromosome filter
-Retains only the chromosomes specified via the `chr_args` parameter in the
-configuration file (e.g. `"--chr 1-22"` to retain autosomes only). This
-allows the pipeline to handle different use cases, for example retaining
-sex chromosomes (23, 24) or the pseudoautosomal region (25) alongside
-autosomes.
+#### Chromosome Selection
+- **chr_args**: PLINK chromosome filter arguments (default: "--chr 1-23")
+  - Examples: "--chr 1-22" (autosomes only), "--chr 1-22 X" (auto + X)
 
-The pipeline uses PLINK2 chromosome encoding throughout:
+#### Script Paths
+- **handle_duplicates_r**: Path to R script for duplicate handling
+- **check_heterozygosity_r**: Path to R script for heterozygosity computation
+- **heterozygosity_outliers_r**: Path to R script for outlier detection
+- **ancestry_pca_plot_r**: Path to R script for PCA visualization
+- **mac_plot_r**: Path to R script for MAC distribution plot
+- **threshold_plot_r**: Path to R script for threshold sweep visualization
 
-| Chromosome | PLINK2 code |
-|---|---|
-| Autosomes | 1-22 |
-| X | 23 |
-| Y | 24 |
-| PAR (XY) | 25 |
-| Mitochondrial | 26 |
+#### Tool Paths
+- **plink_bin**: Path to PLINK 1.9 binary (or command name if in PATH)
+- **plink2_bin**: Path to PLINK 2.0 binary (for KING relatedness)
+- **rscript_bin**: Path to Rscript binary (or command name if in PATH)
+- **perl_bin**: Path to Perl interpreter (or command name if in PATH)
+- **bcftools_bin**: Path to bcftools binary (or command name if in PATH)
+- **bgzip_bin**: Path to bgzip binary (or command name if in PATH)
+- **tabix_bin**: Path to tabix binary (or command name if in PATH)
 
-Sex chromosomes and mitochondrial variants may require specialised handling
-not included in this standard GWAS QC workflow. If they are retained via
-`chr_args`, inspect the per-chromosome variant counts in the pipeline log
-carefully.
+## Running the Pipeline
 
-### Step 9 — Relatedness filtering *(optional)*
-Cryptically related individuals (e.g. undisclosed family members, sample
-duplicates) violate the independence assumption in standard GWAS. Two methods are run on the LD-pruned SNPs:
-
-| Method | Tool | Metric | Use |
-|---|---|---|---|
-| pi-hat | PLINK 1.9 `--genome` | Proportion of alleles identical by descent | Informational report |
-| KING kinship | PLINK2 `--king-cutoff` | Kinship coefficient | Decides which samples to remove |
-
-KING is preferred for removal decisions because it is robust to population
-stratification. A cutoff of 0.0884 corresponds approximately to 3rd-degree
-relatives (cousins).
-
-Set `run_relatedness_check = false` in the configuration json file to skip this step entirely — for example, when working with a cohort containing family trios. When skipped, the autosome-filtered dataset from step 8 passes directly to PCA.
-
-### Step 10 — PCA *(diagnostic only)*
-Principal components are computed on the final QC-passed dataset using the
-LD-pruned SNP list from step 6 (no additional pruning needed). Scatter plots
-of PC1–PC3 are produced to visualise population structure and identify
-potential ancestry outliers before imputation.
-
-No samples are removed at this step. PCA should be repeated after imputation
-to generate the PCs used as covariates in the GWAS model.
-
-### Step 11 — Prepare for imputation
-Aligns strand orientation to the TOPMed/HRC reference panel using Will
-Rayner's `HRC-1000G-check-bim.pl` script, then exports one bgzipped,
-tabix-indexed VCF per autosome for upload to the TOPMed imputation server
-(https://imputation.biodatacatalyst.nhlbi.nih.gov).
-
-The check-bim script removes:
-- SNPs absent from the reference panel
-- Ambiguous A/T and C/G SNPs that cannot be strand-resolved
-- SNPs with allele frequency difference > 0.2 vs the reference
-- SNPs with mismatched positions or alleles
-
----
-
-## Inputs
-
-### Genome build
-
-It is assumed that the input dataset is already aligned to the same genome build as the HRC reference panel (GRCh37). If this is not the case, the pipeline does not perform any liftover itself. Instead it corrects variant positions and alleles to match the HRC reference panel in step 11, which is the critical step for imputation. The `HRC-1000G-check-bim.pl` script will remove any SNPs that cannot be aligned to the reference, so it is important to ensure the input dataset is as close as possible to the reference build to avoid excessive SNP loss at this step. The ld_regions file used in step 6 (LD pruning) also needs to be on the same build as the input data, to remove the correct high-LD regions before pruning. 
-
-If your data are on GRCh38, you can use the HRC reference files lifted over to GRCh38 by the Michigan Imputation Server (https://imputationserver.sph.umich.edu/index.html#!pages/download/reference). 
-
-
-
-### Required files
-
-
-
-### Input genotype files
-
-Set either the binary PLINK files (`bed_file`, `bim_file`, `fam_file`) or the text PLINK files (`ped_file`, `map_file`) as input in the JSON configuration. 
-
-| Input | Description |
-|---|---|
-| `bed_file`, `bim_file`, `fam_file` | PLINK binary genotype files **(or)** |
-| `ped_file`, `map_file` | PLINK text genotype files |
-
-#### Accessory scripts
-
-The pipeline uses several R and Perl scripts for various QC steps. These are included in the `scripts/` directory and referenced in the configuration JSON file.
-
-| Script | Description |
-|---|---|
-| `handle_duplicates_r` | R script to resolve duplicate sample IDs |
-| `check_heterozygosity_r` | R script to compute heterozygosity rates |
-| `heterozygosity_outliers_r` | R script to flag heterozygosity outliers |
-| `threshold_plot_r` | R script to plot SNP/sample counts across missingness thresholds |
-| `mac_plot_r` | R script to plot MAC distribution |
-| `pca_plot_r` | R script to plot PCA results |
-| `check_bim_pl` | Will Rayner's `HRC-1000G-check-bim.pl` script |
-
-
-#### Accessory files
-
-The pipeline also requires some reference files for certain steps, which are not included in the repository. Use the helper script below to download these files:
-
+### Step 1: Prepare Input Data
 ```bash
-bash src/download_resources.bash
+# Ensure you have PLINK binary files (bed/bim/fam) or text files (ped/map)
+ls -lh your_data.*
 ```
 
-| Dataset | Description |
-|---|---|
-| `ld_regions` | High-LD genomic regions to exclude from LD pruning. The file `high-LD-regions-hg19-GRCh37.txt` lists hg19/GRCh37 coordinates from Syed et al. (2025). Replace with hg38 coordinates if your data use GRCh38. |
-| `hrc_ref_freq` | HRC r1.1 GRCh37 reference frequency file |
-
-The ld_regions file needs to be in the format used by plink's `--exclude range` option, with columns: chromosome, start, end.
-
-**Note:** You need to make sure that the files are compatible with your input data. For example, chromosomes need to be in the same format (e.g. "chr1" vs "1") across the input dataset.
-
-### Tool paths
-
-By default the pipeline expects `plink`, `plink2`, `Rscript`, `perl`, `bcftools`, `bgzip`, and `tabix` to be on `$PATH`. If they are not, override these inputs in the JSON:
-
-| Input | Default | Description |
-|---|---|---|
-| `plink_bin` | `"plink"` | Path to PLINK 1.9 binary |
-| `plink2_bin` | `"plink2"` | Path to PLINK2 binary |
-| `rscript_bin` | `"Rscript"` | Path to Rscript binary |
-| `perl_bin` | `"perl"` | Path to Perl binary |
-| `bcftools_bin` | `"bcftools"` | Path to bcftools binary |
-| `bgzip_bin` | `"bgzip"` | Path to bgzip binary |
-| `tabix_bin` | `"tabix"` | Path to tabix binary |
-
-
-### QC thresholds
-
-QC thresholds are defined in the json configuration file. The table lists values that are commonly used in similar pipelines.
-
-| Parameter | Meaning | Typical value | Remarks |
-|---|---|---|---|
-| `geno_threshold` | Max SNP missingness rate | `0.05` | |
-| `mind_threshold` | Max sample missingness rate | `0.05` | |
-| `hwe_pvalue` | Min HWE p-value | `1e-6` | |
-| `mac_threshold` | Min minor allele count to retain a SNP | `50` | |
-| `chr_args` | Chromosomes to retain after sample QC | `"--chr 1-22"` | Use PLINK2 encoding (e.g. `"--chr 1-26"` for all) |
-| `ld_r2` | Max r² for LD pruning | `0.2` | |
-| `ld_window_kb` | LD pruning window size (kb) | `50` | |
-| `ld_step` | LD pruning step size (SNPs) | `5` | |
-| `pihat_min` | Min pi-hat to report a related pair | `0.2` | Only used if `run_relatedness_check = true` |
-| `king_cutoff` | KING kinship cutoff for removal | `0.0884` | Only used if `run_relatedness_check = true` |
-| `n_pcs` | Number of principal components to compute | `10` | |
-
----
-
-## Outputs
-
-Final QC-passed files are copied to `results/` after the run (see
-[How to run](#how-to-run) below). Intermediate per-step files remain in the
-executor's working directory (`_miniwdl_run/` or `cromwell-executions/`) and
-can be deleted once the run is verified.
-
-| Output | Description | Remarks |
-|---|---|---|
-| `pipeline_log` | Human-readable run summary: version, date, SNP/sample counts at each QC step | |
-| `final_bed/bim/fam` | QC-passed dataset — use this for downstream analyses | |
-| `sexcheck_report` | Full PLINK sex check results (if X SNPs present) | |
-| `problem_samples` | Samples removed at sex check step | |
-| `het_check_report` | Per-sample heterozygosity rates | |
-| `het_fail_samples` | Samples removed at heterozygosity step | |
-| `mac_plot` | MAC distribution and before/after barplot | |
-| `mac_freq_before` | Allele frequencies before MAC filter (QC diagnostic) | |
-| `mac_freq_after` | Allele frequencies after MAC filter (QC diagnostic) | |
-| `pihat_genome` | All related pairs above `pihat_min` (informational) | Only present if `run_relatedness_check = true`|
-| `king_cutoff_out_id` | Samples removed at relatedness step | Only present if `run_relatedness_check = true` |
-| `prune_in` | LD-pruned SNP list (useful for PCA) | |
-| `prune_out` | SNPs excluded by LD pruning | |
-| `pca_eigenvec` | PC scores per sample | |
-| `pca_eigenval` | Variance explained per PC | |
-| `pca_plot` | Scatter plots of PC1–PC3 | |
-| `imputation_vcfs` | Per-chromosome bgzipped VCFs for imputation server upload | |
-| `imputation_vcf_tbis` | Tabix indices for imputation VCFs | |
-| `check_bim_log` | Log from `HRC-1000G-check-bim.pl` | |
-
----
-
-
-## How to run
-
-### 1. Install dependencies
-
-Option 1: conda (recommended):
-
-Create the environment from the provided `environment.yml` file in the
-repository root. This installs all required tools (PLINK 1.9, PLINK2,
-R ≥ 4.0, Perl, bcftools, bgzip, tabix) and Java in a single step:
-
+### Step 2: Update Configuration
 ```bash
-conda env create -f environment.yml
-conda activate genotype-qc
+# Edit config/genotype_qc_preimputation_inputs.json
+# - Set input file paths
+# - Update tool paths if needed
+# - Adjust QC thresholds if desired
+# - Specify ancestry_populations (e.g., "EUR" or "EUR,AFR")
 ```
 
-To update an existing environment after the file changes:
-
+### Step 3: Prepare Reference Files
 ```bash
-conda env update -f environment.yml --prune
+# Download 1000 Genomes reference panel
+# Ensure HRC/TOPMed frequency file is available
+# Verify script paths point to correct R and Perl scripts
 ```
 
-R packages (ggplot2, dplyr, tidyr, readr, patchwork, scales) are included
-in `environment.yml` via `r-*` conda packages. If you prefer to install them
-from CRAN instead:
-
-```r
-install.packages(c("ggplot2", "dplyr", "tidyr", "readr", "patchwork", "scales"))
-```
-
-The Perl module `Term::ReadKey` (required by Will Rayner's check-bim script)
-is not on conda; install it via cpan:
-
+### Step 4: Run Workflow with Cromwell
 ```bash
-cpan App::cpanminus
-cpanm Term::ReadKey
+java -jar ~/apps/cromwell-92.jar run \
+  src/genotype_qc_preimputation.wdl \
+  -i config/genotype_qc_preimputation_inputs.json
 ```
 
-Cromwell is not included in the conda environment (it is a standalone JAR).
-Download it from https://github.com/broadinstitute/cromwell/releases and
-place it somewhere on your `$PATH`, or reference it by full path. Java ≥ 17
-is required (provided by the `openjdk` package in the environment).
-
-Option 2: UCL Myriad HPC modules:
+### Step 5: Collect Results
 ```bash
-module load plink/1.9
-module load plink2/2.0
-module load r/4.2.1
+# After workflow completes:
+./src/collect_cromwell_results.bash
+# Results will be in results/ directory
 ```
 
-Option 3: Manual install:
+## Output Files
 
-- PLINK 1.9 and PLINK2: download binaries from
-  https://www.cog-genomics.org/plink/ and place them on `$PATH`, or supply
-  their paths via `plink_bin` / `plink2_bin` in the inputs JSON.
-- R ≥ 4.0: https://cran.r-project.org/. Install required packages from CRAN:
-  ```r
-  install.packages(c("ggplot2", "dplyr", "tidyr", "readr", "patchwork", "scales"))
-  ```
-- bcftools / bgzip / tabix: install via your system package manager, e.g.
-  ```bash
-  # Debian/Ubuntu
-  sudo apt install bcftools tabix
-  # macOS
-  brew install bcftools htslib
-  ```
-  or download from https://www.htslib.org/download/.
-- Perl and `Term::ReadKey` (required by the check-bim script):
-  ```bash
-  cpan App::cpanminus
-  cpanm Term::ReadKey
-  ```
-- Java ≥ 17 (for Cromwell): https://adoptium.net/ or via your package manager.
-- Cromwell: download the standalone JAR from
-  https://github.com/broadinstitute/cromwell/releases and place it on `$PATH`
-  or reference it by full path when running the pipeline.
+### QC Dataset
+- **final_bed/bim/fam**: Final QC'd dataset ready for imputation
+- **final.vcf.gz**: Final dataset in VCF format (bgzipped)
 
+### QC Reports
+- **threshold_plot.png**: SNP and sample retention across thresholds
+- **mac_plot.png**: Allele frequency distribution before/after filtering
+- **ancestry_assignments.tsv**: Per-sample superpopulation assignments
+- **relatedness_flagged_samples.txt**: Samples flagged as related (for user decision)
+- **sex_check_report**: Sex consistency report
+- **heterozygosity plots and outlier list**
 
+### Imputation-Ready VCFs
+- **per-chromosome VCFs**: `chr{1-23}.vcf.gz` (ready for imputation server)
 
-### 2. Create an inputs JSON file
+## Important Notes
 
-This is just a partial example of the JSON configuration file. For a full list of inputs, see `config/genotype_qc_preimputation.wdl`. Set the paths to your input genotype files, the accessory scripts, and the reference datasets as needed. **Note**: Instead of plink formatted bed/bim/fam files, you can also input ped/map files as "genotype_qc_preimputation.ped_file" and "genotype_qc_preimputation.map_file". The pipeline will convert them to binary format in the first step.
+### Ancestry-Aware Filtering Strategy
+- **MAC filter**: Full cohort (rarity is global property)
+- **HWE filter**: Detected on ancestry subset, removed from full cohort
+  - Rationale: Avoids false HWE violations in admixed samples
+- **Heterozygosity filter**: Detected on ancestry subset, removed from subset only
+  - Rationale: Preserves samples from untested populations
+- **Relatedness**: Detected on full cohort, samples flagged (not removed)
+  - Rationale: User controls removal decisions in downstream analysis
 
-```json
-{
-  "genotype_qc_preimputation.bed_file":                  "/path/to/myStudy.bed",
-  "genotype_qc_preimputation.bim_file":                  "/path/to/myStudy.bim",
-  "genotype_qc_preimputation.fam_file":                  "/path/to/myStudy.fam",
-  "genotype_qc_preimputation.output_prefix":             "myStudy",
-  "genotype_qc_preimputation.ld_regions":                "/path/to/high-LD-regions.txt",
-  "genotype_qc_preimputation.handle_duplicates_r":       "path/to/handle_duplicates.R",
-  "genotype_qc_preimputation.check_heterozygosity_r":    "/path/to/check_heterozygosity_rate.R",
-  "genotype_qc_preimputation.heterozygosity_outliers_r": "/path/to/heterozygosity_outliers_list.R",
-  "genotype_qc_preimputation.threshold_plot_r":          "/path/to/threshold_plot.R",
-  "genotype_qc_preimputation.mac_plot_r":                "/path/to/mac_plot.R",
-  "genotype_qc_preimputation.pca_plot_r":                "/path/to/pca_plot.R",
-  "genotype_qc_preimputation.check_bim_pl":              "/path/to//HRC-1000G-check-bim.pl",
-  "genotype_qc_preimputation.hrc_ref_freq":              "/path/to/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz",
-  "genotype_qc_preimputation.geno_threshold":            0.03,
-  "genotype_qc_preimputation.mind_threshold":            0.05,
-  "genotype_qc_preimputation.hwe_pvalue":                1e-6,
-  "genotype_qc_preimputation.mac_threshold":             50,
-  "genotype_qc_preimputation.ld_r2":                     0.2,
-  "genotype_qc_preimputation.ld_window_kb":              50,
-  "genotype_qc_preimputation.ld_step":                   5,
-  "genotype_qc_preimputation.run_relatedness_check":     true,
-  "genotype_qc_preimputation.pihat_min":                 0.2,
-  "genotype_qc_preimputation.king_cutoff":               0.0884,
-  "genotype_qc_preimputation.n_pcs":                     10
-}
-```
+### Handling Related Samples
+The pipeline **flags** related samples but does NOT automatically remove them. To use the relatedness information:
 
-### 3. Run with miniwdl
+1. View flagged samples in `relatedness_flagged_samples.txt`
+2. Decide which pairs to break based on your study design
+3. Use PLINK's `--remove` flag in association tests
 
-miniwdl requires Docker to be running (on macOS, Docker Desktop must be
-started first). If Docker is not available, use Cromwell instead — it runs
-tasks directly on the host when no `docker:` runtime attribute is set, which
-is the case for all tasks in this pipeline.
-
-```bash
-miniwdl run src/genotype_qc_preimputation.wdl -i inputs.json
-
-# Copy final outputs to results/
-RUNDIR=$(ls -td _miniwdl_run/*/genotype_qc_preimputation | head -1)
-mkdir -p results
-cp "$RUNDIR/out/final_bed"/*.bed \
-   "$RUNDIR/out/final_bim"/*.bim \
-   "$RUNDIR/out/final_fam"/*.fam \
-   "$RUNDIR/out/pipeline_log"/*_pipeline.log \
-   results/
-```
-### 4. Run with Cromwell
-
-The cromwell wdl runner is a Java application that executes WDL workflows.
-
-```bash
-java -jar cromwell-<version>.jar run src/genotype_qc_preimputation.wdl --inputs inputs.json
-```
-
-Once the run completes, results can be collected from the cromwell execution directory. The default output path will be in `cromwell-executions/<pipeline>/<uuid>/`. A helper script is provided to collect all relevant outputs into a single directory for easier access and inspection:
-
-```
-bash collect_cromwell_results.sh <cromwell_run> <output_dir>
-```
-
----
+### Using Ancestry Assignments Downstream
+After QC, use the ancestry assignments file to:
+1. Filter samples in PLINK association tests: `plink --keep ancestry_assignments.tsv --filter-cases`
+2. Perform ancestry-stratified analyses
+3. Adjust for ancestry in statistical models
 
 ## Troubleshooting
 
-Each PLINK step produces a `.log` file in the executor working directory. Check these first if a step fails:
+### Empty Ancestry Keep-List
+**Error**: "No samples found for populations: EUR"
+**Cause**: Population names in config don't match 1000G assignments
+**Fix**: Check `ancestry_assignments.tsv` for correct population labels; edit config
 
-```bash
-# miniwdl — logs are alongside each task's outputs
-find _miniwdl_run -name "*.log" | sort
+### Missing X Chromosome
+**Info**: Sex check step is skipped
+**Cause**: Input data has no X chromosome SNPs
+**Fix**: This is normal; proceed with analysis (sex check optional)
 
-# Cromwell
-find cromwell-executions -name "*.log" | sort
-```
+### Relatedness Check Takes Too Long
+**Cause**: KING kinship computation is expensive on large datasets
+**Solution**: Consider increasing `pihat_min` threshold or running on subset
 
-Common failure causes:
+## References
 
-| Error | Likely cause |
-|---|---|
-| `Error: No SNPs pass --geno` | Threshold too strict, or input data quality is very poor |
-| `Error: No samples pass --mind` | As above for samples |
-| Sex check produces no output | No X-chromosome SNPs in dataset (pipeline skips this automatically) |
-| KING produces empty output | Too few SNPs in pruned set; try relaxing `ld_r2` |
-| `check-bim` produces no VCFs | No SNPs passed reference alignment; check genome build and `hrc_ref_freq` |
-
----
-
-## Expected resource usage
-
-For a typical dataset (~500k SNPs, ~2,000 samples):
-
-| Resource | Requirement |
-|---|---|
-| CPUs | 1 (pipeline is single-threaded) |
-| RAM | 4–8 GB |
-| Runtime | 15–30 minutes |
-| Disk | ~3× the size of input files |
-
-Larger datasets (e.g. whole-genome imputed data, >100k samples) will require
-proportionally more RAM and runtime.
-
----
-
-## Dependencies
-
-All tools must be on `$PATH` or their paths supplied via the `*_bin` inputs
-in the JSON (see [Tool paths](#tool-paths-optional) above).
-
-| Tool | Version | Purpose |
-|---|---|---|
-| PLINK 1.9 | ≥ 1.9 | Most QC steps |
-| PLINK2 | ≥ 2.0 | KING relatedness, PCA |
-| R / Rscript | ≥ 4.0 | Heterozygosity, duplicate, MAC, PCA scripts |
-| Perl | any recent | HRC check-bim script |
-| bcftools / bgzip / tabix | any recent | VCF conversion for imputation |
-| miniwdl or Cromwell | any recent | WDL executor |
-
----
-
-## Reference
-
-Anderson CA et al. (2010). Data quality control in genetic case-control
-association studies. Nature Protocols 5, 1564–1573.  
-https://doi.org/10.1038/nprot.2010.116
-
-Marees AT et al. (2018). A tutorial on conducting genome-wide association
-studies: Quality control and statistical analysis. International Journal of
-Methods in Psychiatric Research 27, e1608.  
-https://doi.org/10.1002/mpr.1608
-
-Syed H et al. (2025). plinkQC: quality control of genetic datasets.  
-https://doi.org/10.1101/2025.11.25.690541
+- PLINK 1.9: https://www.cog-genomics.org/plink/1.9/
+- PLINK 2.0: https://www.cog-genomics.org/plink/2.0/
+- KING relatedness: https://www.kingrelatedness.com/
+- Will Rayner's HRC-1000G-check-bim: http://www.well.ox.ac.uk/~wrayner/
+- 1000 Genomes Project: https://www.internationalgenome.org/
