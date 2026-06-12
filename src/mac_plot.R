@@ -73,21 +73,26 @@ mac_combined <- bind_rows(
     mutate(stage = factor(stage, levels = c("Before filtering", "After filtering")))
 
 # Sensible binwidth: 1 for small thresholds, wider for larger datasets
-bw <- max(1L, as.integer(mac_threshold / 5L))
+# bw <- max(1L, as.integer(mac_threshold / 5L))
 
-p_dist <- ggplot(mac_combined, aes(x = MAC, fill = stage)) +
-    geom_histogram(binwidth = bw, boundary = 0, colour = "white", linewidth = 0.2) +
+# Convert MAC threshold to allele frequency percentage for display
+threshold_af_percent <- (mac_threshold / max(before$NCHROBS, na.rm = TRUE)) * 100
+
+p_dist <- ggplot(mac_combined, aes(x = MAF * 100, fill = stage)) +
+    geom_density(linewidth = 1, alpha = 0.3) +
+    ## geom_histogram(binwidth = bw, boundary = 0, colour = "white", linewidth = 0.2) +
+    
     geom_vline(
-        xintercept = mac_threshold,
+        xintercept = threshold_af_percent,
         linetype   = "dashed",
         colour     = "grey30"
     ) +
     annotate(
         "text",
-        x      = mac_threshold,
+        x      = threshold_af_percent,
         y      = Inf,
-        label  = paste0("threshold\n(MAC = ", mac_threshold, ")"),
-        hjust  = -0.1,
+        label  = paste0("MAC threshold = ", mac_threshold),
+        hjust  = -0.05,
         vjust  = 1.3,
         size   = 3,
         colour = "grey30"
@@ -100,8 +105,8 @@ p_dist <- ggplot(mac_combined, aes(x = MAC, fill = stage)) +
     scale_y_continuous(labels = comma) +
     facet_wrap(~stage, ncol = 1) +
     labs(
-        title = "MAC distribution before and after filtering",
-        x     = "Minor allele count",
+        title = "Allele frequency distribution before and after filtering",
+        x     = "Allele frequency (%)",
         y     = "Number of SNPs",
         fill  = NULL
     ) +
