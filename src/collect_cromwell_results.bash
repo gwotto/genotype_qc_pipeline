@@ -62,6 +62,13 @@ echo "Copying final QC dataset (PLINK bed/bim/fam)..."
 CALL="$BASE/call-ChromosomeFilter/execution"
 cp "$CALL"/*.bed "$CALL"/*.bim "$CALL"/*.fam "$OUTDIR/qc_dataset/"
 
+# -- Threshold sweep plot (shows SNP/sample retention across thresholds) --------
+echo "Copying threshold sweep plot..."
+CALL="$BASE/call-ThresholdSweep/execution"
+if [ -d "$CALL" ]; then
+    cp "$CALL"/*.png "$OUTDIR/plots/" 2>/dev/null || true
+fi
+
 # -- Sex check report (step 3 - SexCheck / RemoveSexFails) --------------------
 # Only present if the dataset contained X-chromosome SNPs
 echo "Copying sex check reports (if present)..."

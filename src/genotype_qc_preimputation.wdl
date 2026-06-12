@@ -49,48 +49,6 @@ version 1.0
 ## =============================================================================
 
 
-    # Helper task: Merge het-filtered tested population with non-tested populations
-    task MergeKeepLists {
-        input {
-            File tested_fam      # FAM file with het-filtered tested population
-            File all_fam         # Original FAM file with all populations
-            File tested_keep     # Keep-list of tested populations
-            Boolean is_all_pops  # Whether testing all populations
-            String output_prefix
-        }
-        
-        command <<<
-            set -euo pipefail
-            
-            if [ "~{is_all_pops}" = "true" ]; then
-                # When testing all populations, just use the het-filtered FAM
-                awk '{print $1, $2}' ~{tested_fam} > ~{output_prefix}_merged_keep.txt
-            else
-                # When testing a subset:
-                # 1. Extract IIDs from tested population keep-list
-                awk '{print $2}' ~{tested_keep} > tested_iids.txt
-                
-                # 2. Get het-filtered tested samples from tested_fam
-                awk '{print $1, $2}' ~{tested_fam} > tested_filtered.txt
-                
-                # 3. Get non-tested populations (those NOT in the tested_keep list)
-                awk 'NR==FNR{iids[$0]=1; next} !($2 in iids) {print $1, $2}' tested_iids.txt ~{all_fam} > other_pops.txt
-                
-                # 4. Combine: het-filtered tested population + non-tested populations
-                cat tested_filtered.txt other_pops.txt > ~{output_prefix}_merged_keep.txt
-                
-                rm -f tested_iids.txt tested_filtered.txt other_pops.txt
-            fi
-        >>>
-        
-        output {
-            File merged_keep = "~{output_prefix}_merged_keep.txt"
-        }
-        
-        runtime { maxRetries: 1 }
-    }
-
-
 workflow genotype_qc_preimputation {
 
     input {
@@ -659,6 +617,9 @@ String relatedness_log_line = LogStep9.line
         File prune_out = LdPruningHet.prune_out
         File? related_prune_in = LdPruningRelatedness.prune_in
 
+        # Threshold sweep plot — shows SNP/sample retention across filtering thresholds
+        File threshold_plot = ThresholdSweep.sweep_plot
+
         # Ancestry PCA against 1000 Genomes
         File ancestry_pca_eigenvec     = AncestryPCA.eigenvec       # PC scores (study + 1000G)
         File ancestry_pca_plot         = AncestryPCA.pca_plot        # Study samples overlaid on 1000G
@@ -945,6 +906,123 @@ task ThresholdSweep {
     }
     runtime { maxRetries: 1 }
 }
+
+
+    # Helper task: Merge het-filtered tested population with non-tested populations
+task MergeKeepLists {
+    input {
+        File tested_fam      # FAM file with het-filtered tested population
+        File all_fam         # Original FAM file with all populations
+        File tested_keep     # Keep-list of tested populations
+        Boolean is_all_pops  # Whether testing all populations
+        String output_prefix
+    }
+        
+    command <<<
+        set -euo pipefail
+        
+        if [ "~{is_all_pops}" = "true" ]; then
+            # When testing all populations, just use the het-filtered FAM
+            awk '{print $1, $2}' ~{tested_fam} > ~{output_prefix}_merged_keep.txt
+        else
+            # When testing a subset:
+            # 1. Extract IIDs from tested population keep-list
+            awk '{print $2}' ~{tested_keep} > tested_iids.txt
+            
+            # 2. Get het-filtered tested samples from tested_fam
+            awk '{print $1, $2}' ~{tested_fam} > tested_filtered.txt
+            
+            # 3. Get non-tested populations (those NOT in the tested_keep list)
+            awk 'NR==FNR{iids[$0]=1; next} !($2 in iids) {print $1, $2}' tested_iids.txt ~{all_fam} > other_pops.txt
+            
+            # 4. Combine: het-filtered tested population + non-tested populations
+            cat tested_filtered.txt other_pops.txt > ~{output_prefix}_merged_keep.txt
+            
+            rm -f tested_iids.txt tested_filtered.txt other_pops.txt
+        fi
+    >>>
+        
+    output {
+        File merged_keep = "~{output_prefix}_merged_keep.txt"
+    }
+        
+    runtime { maxRetries: 1 }
+}
+
+
+# Threshold sweep analysis tasks
+task GenoSweep {
+    input {
+        File bed_file
+        File bim_file
+        File fam_file
+        String output_prefix
+        String plink_bin
+    }
+    command <<<
+        set -euo pipefail
+        echo "threshold	n_snps" > ~{output_prefix}_geno_sweep.txt
+        for threshold in 0.01 0.02 0.05 0.10 0.20; do
+            ~{plink_bin} --bed ~{bed_file} --bim ~{bim_file} --fam ~{fam_file} --geno $threshold --make-just-bim --out temp_geno_$threshold --silent 2>/dev/null || true
+            if [ -f "temp_geno_$threshold.bim" ]; then
+                n_snps=$(wc -l < temp_geno_$threshold.bim)
+                echo -e "$threshold	$n_snps" >> ~{output_prefix}_geno_sweep.txt
+            fi
+        done
+        rm -f temp_geno_*.bed temp_geno_*.bim temp_geno_*.fam temp_geno_*.log
+    >>>
+    output { File geno_sweep = "~{output_prefix}_geno_sweep.txt" }
+    runtime { maxRetries: 1 }
+}
+
+task MindSweep {
+    input {
+        File bed_file
+        File bim_file
+        File fam_file
+        String output_prefix
+        String plink_bin
+    }
+    command <<<
+        set -euo pipefail
+        echo "threshold	n_samples" > ~{output_prefix}_mind_sweep.txt
+        for threshold in 0.01 0.02 0.05 0.10 0.20; do
+            ~{plink_bin} --bed ~{bed_file} --bim ~{bim_file} --fam ~{fam_file} --mind $threshold --make-just-fam --out temp_mind_$threshold --silent 2>/dev/null || true
+            if [ -f "temp_mind_$threshold.fam" ]; then
+                n_samples=$(wc -l < temp_mind_$threshold.fam)
+                echo -e "$threshold	$n_samples" >> ~{output_prefix}_mind_sweep.txt
+            fi
+        done
+        rm -f temp_mind_*.bed temp_mind_*.bim temp_mind_*.fam temp_mind_*.log
+    >>>
+    output { File mind_sweep = "~{output_prefix}_mind_sweep.txt" }
+    runtime { maxRetries: 1 }
+}
+
+task ThresholdPlot {
+    input {
+        File geno_sweep
+        File mind_sweep
+        Float geno_threshold
+        Float mind_threshold
+        File threshold_plot_r
+        String rscript_bin
+        String output_prefix
+    }
+    command <<<
+        set -euo pipefail
+        cp ~{geno_sweep} geno_sweep.txt
+        cp ~{mind_sweep} mind_sweep.txt
+        ~{rscript_bin} ~{threshold_plot_r} ~{geno_threshold} ~{mind_threshold}
+        if [ -f "threshold_plot.png" ]; then
+            mv threshold_plot.png ~{output_prefix}_threshold_plot.png
+        fi
+    >>>
+    output { File sweep_plot = "~{output_prefix}_threshold_plot.png" }
+    runtime { maxRetries: 1 }
+}
+
+
 
 ## -----------------------------------------------------------------------------
 ## RemoveSamples
