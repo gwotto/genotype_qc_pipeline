@@ -97,24 +97,23 @@ cp "$CALL"/*.het "$OUTDIR/reports/"
 cp "$CALL"/*.png "$OUTDIR/plots/" 2>/dev/null || true
 cp "$CALL"/het_fail_ind.txt "$OUTDIR/reports/het_fail_samples.txt" 2>/dev/null || true
 
-# -- Relatedness report (step 9 - RelatednessCheck) - skipped if run_relatedness_check=false
+# -- Relatedness report (step 3c - PrePCARelatednessCheck; run before PCA) ----
 echo "Copying relatedness reports (if present)..."
-CALL="$BASE/call-RelatednessCheck/execution"
+CALL="$BASE/call-PrePCARelatednessCheck/execution"
 if [ -d "$CALL" ]; then
     cp "$CALL"/*.genome "$OUTDIR/reports/" 2>/dev/null || true
     cp "$CALL"/*.king.cutoff.out.id "$OUTDIR/reports/relatedness_flagged_samples.txt" 2>/dev/null || true
+    cp "$CALL"/*.king.cutoff.in.id  "$OUTDIR/reports/relatedness_unrelated_samples.txt" 2>/dev/null || true
 fi
-
-# -- LD-pruned SNP list used for ancestry PCA (step 3b - LdPruningPCA) --------
-echo "Copying PCA LD-pruned SNP list..."
-CALL="$BASE/call-LdPruningPCA/execution"
-[ -d "$CALL" ] && cp "$CALL"/*.prune.in "$OUTDIR/pca/" 2>/dev/null || true
 
 # -- Ancestry PCA against 1000 Genomes & ancestry assignments -----
 echo "Copying ancestry PCA results and assignments..."
 CALL="$BASE/call-AncestryPCA/execution"
 if [ -d "$CALL" ]; then
     cp "$CALL"/*.eigenvec "$CALL"/*.eigenval "$OUTDIR/pca/" 2>/dev/null || true
+    cp "$CALL"/*.eigenvec.var "$OUTDIR/pca/" 2>/dev/null || true
+    cp "$CALL"/all_study_projected.sscore "$OUTDIR/pca/" 2>/dev/null || true
+    cp "$CALL"/merged_pca_prune.prune.in "$OUTDIR/pca/" 2>/dev/null || true
     cp "$CALL"/*_ancestry_pca.png "$OUTDIR/plots/" 2>/dev/null || true
     for f in "$CALL"/*_ancestry_assignments.tsv; do
         [ -e "$f" ] || continue

@@ -42,5 +42,6 @@
   "genotype_qc_preimputation.n_pcs":          10,
   "genotype_qc_preimputation.mac_threshold":  50,
   "genotype_qc_preimputation.chr_args": "--chr 1-23",
-  "genotype_qc_preimputation.ancestry_populations": "ALL"
+  "genotype_qc_preimputation.test_populations": "ALL",
+  "genotype_qc_preimputation.pca_reference_populations": "EUR,AFR,EAS,SAS"
 }

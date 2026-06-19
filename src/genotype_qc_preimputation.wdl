@@ -110,7 +110,12 @@ workflow genotype_qc_preimputation {
         # -- Ancestry subset selection --------------------------------------
         # Comma-separated list of superpopulations to run variant/sample
         # detection on (e.g. "EUR,AFR"). Use "ALL" to run on entire cohort.
-        String ancestry_populations = "ALL"
+        String test_populations = "ALL"
+
+        # Comma-separated list of 1000G superpopulations to include in the
+        # ancestry PCA reference panel (e.g. "EUR,AFR,EAS,SAS,AMR").
+        # Use "ALL" to include all 2504 phase-3 samples.
+        String pca_reference_populations = "ALL"
 
         # -- Imputation preparation ----------------------------------------------
         File   check_bim_pl  # Will Rayner's HRC-1000G-check-bim.pl script
@@ -275,13 +280,8 @@ workflow genotype_qc_preimputation {
         "Step 3   Sex check                            [skipped - no X SNPs]"
     ])
 
-### TODO: Relatedness check here. Run PCA without related samples
-
-    # -- Step 3b: LD pruning for ancestry PCA ---------------------------------
-    # Generates a set of approximately independent SNPs for use in PCA.
-    # The 1000G reference panel should already be LD-pruned; this prunes the
-    # study data to a matching independent subset before the merge and PCA.
-    call LdPruning as LdPruningPCA {
+    # -- Step 3b: LD pruning (for pre-PCA relatedness check) --------------
+    call LdPruning as LdPruningPreRelatedness {
         input:
             bed_file      = select_first([RemoveSexFails.out_bed, MindFilter.out_bed]),
             bim_file      = select_first([RemoveSexFails.out_bim, MindFilter.out_bim]),
@@ -290,32 +290,66 @@ workflow genotype_qc_preimputation {
             ld_window_kb  = ld_window_kb,
             ld_step       = ld_step,
             ld_r2         = ld_r2,
-            output_prefix = output_prefix + "_indepSNP_pca",
-            label         = "Step 3b  LD pruning (ancestry PCA)",
+            output_prefix = output_prefix + "_indepSNP_prerelatedness",
+            label         = "Step 3b  LD pruning (pre-relatedness)",
             plink_bin     = plink_bin
     }
 
+    # -- Step 3c: Relatedness check (preliminary, before PCA) ---------------
+    # Related samples are identified and flagged — they are NOT removed from
+    # the main dataset. They are excluded from the PCA computation so that
+    # closely related pairs do not distort the principal components. All
+    # samples (including related) receive ancestry assignments via PLINK2
+    # projection inside AncestryPCA.
+    call RelatednessCheck as PrePCARelatednessCheck {
+        input:
+            bed_file      = select_first([RemoveSexFails.out_bed, MindFilter.out_bed]),
+            bim_file      = select_first([RemoveSexFails.out_bim, MindFilter.out_bim]),
+            fam_file      = select_first([RemoveSexFails.out_fam, MindFilter.out_fam]),
+            prune_in      = LdPruningPreRelatedness.prune_in,
+            pihat_min     = pihat_min,
+            king_cutoff   = king_cutoff,
+            output_prefix = output_prefix + "_prerelatedness",
+            plink_bin     = plink_bin,
+            plink2_bin    = plink2_bin
+    }
+
+    call CountBimFam as LogPrePCARelatedness {
+        input:
+            bim_file = select_first([RemoveSexFails.out_bim, MindFilter.out_bim]),
+            fam_file = select_first([RemoveSexFails.out_fam, MindFilter.out_fam]),
+            label    = "Step 3c  Pre-PCA relatedness check      (related flagged, excl. from PCA only)"
+    }
+
+    String pre_pca_relatedness_log_line = LogPrePCARelatedness.line
+
     # -- Step 4: Ancestry PCA against 1000 Genomes -----------------------
-    # Merges the post-sex-check study data with the 1000G Phase 3 reference
-    # panel and computes PCA jointly. Used to assign superpopulation ancestry
-    # labels to study samples and identify ancestry outliers.
-    # Input data must be on hg19/GRCh37 to match the 1000G reference.
+    # Merges the post-sex-check UNRELATED study data with the 1000G Phase 3
+    # reference panel and computes PCA jointly. Related samples are excluded
+    # from the merged dataset so they do not distort the PCs, then projected
+    # back using PLINK2 variant weights so all samples receive ancestry labels.
+    # LD pruning is performed on the merged dataset so that independence is
+    # assessed jointly across study and reference populations.
     call AncestryPCA {
         input:
-            bed_file           = select_first([RemoveSexFails.out_bed, MindFilter.out_bed]),
-            bim_file           = select_first([RemoveSexFails.out_bim, MindFilter.out_bim]),
-            fam_file           = select_first([RemoveSexFails.out_fam, MindFilter.out_fam]),
-            ref_bed            = ref_1kg_bed,
-            ref_bim            = ref_1kg_bim,
-            ref_fam            = ref_1kg_fam,
-            ref_psam           = ref_1kg_psam,
-            n_pcs              = n_pcs,
-            output_prefix      = output_prefix + "_ancestry_pca",
-            plink_bin          = plink_bin,
-            plink2_bin          = plink2_bin,
-            rscript_bin         = rscript_bin,
-            ancestry_pca_plot_r = ancestry_pca_plot_r,
-            prune_in            = LdPruningPCA.prune_in
+            bed_file            = select_first([RemoveSexFails.out_bed, MindFilter.out_bed]),
+            bim_file            = select_first([RemoveSexFails.out_bim, MindFilter.out_bim]),
+            fam_file            = select_first([RemoveSexFails.out_fam, MindFilter.out_fam]),
+            ref_bed             = ref_1kg_bed,
+            ref_bim             = ref_1kg_bim,
+            ref_fam             = ref_1kg_fam,
+            ref_psam            = ref_1kg_psam,
+            ld_regions          = ld_regions,
+            ld_window_kb        = ld_window_kb,
+            ld_step             = ld_step,
+            ld_r2               = ld_r2,
+            n_pcs                      = n_pcs,
+            output_prefix              = output_prefix + "_ancestry_pca",
+            pca_reference_populations  = pca_reference_populations,
+            plink_bin                  = plink_bin,
+            plink2_bin                 = plink2_bin,
+            rscript_bin                = rscript_bin,
+            ancestry_pca_plot_r        = ancestry_pca_plot_r
     }
 
     # --- Step 5: MAC filter (full cohort) ----------------------------------------
@@ -350,7 +384,7 @@ workflow genotype_qc_preimputation {
         input:
             assignments = AncestryPCA.assignments,
             fam_file    = MacFilter.out_fam,
-            populations = ancestry_populations,
+            populations = test_populations,
             output_prefix = output_prefix
     }
 
@@ -451,15 +485,15 @@ workflow genotype_qc_preimputation {
             plink_bin     = plink_bin
     }
 
-    # Merge het-filtered subset back with other populations (if ancestry_populations != "ALL")
-    # When ancestry_populations = "ALL": use the het-filtered subset directly (all het failures removed)
+    # Merge het-filtered subset back with other populations (if test_populations != "ALL")
+    # When test_populations = "ALL": use the het-filtered subset directly (all het failures removed)
     # When testing a specific population: combine het-filtered subset + non-tested populations
     call MergeKeepLists as MergeHetKeepLists {
         input:
             tested_fam      = RemoveHetFailsFromSubset.out_fam,
             all_fam         = RemoveVariantsAfterHWE.out_fam,
             tested_keep     = MakeAncestryKeepList.keep_list,
-            is_all_pops     = (ancestry_populations == "ALL"),
+            is_all_pops     = (test_populations == "ALL"),
             output_prefix   = output_prefix + "_het_merged_keep"
     }
 
@@ -501,51 +535,8 @@ workflow genotype_qc_preimputation {
             label    = "Step 8   Chromosome filter"
     }
 
-    # -- Step 9: Relatedness tests -------------------------------------
-    # Identifies cryptically related samples using two methods:
-    #   • pi-hat (PLINK --genome): proportion of IBD alleles shared
-    #   • KING kinship coefficient (PLINK2 --king-cutoff): more robust in
-    #     the presence of population stratification
-    # Samples identified by KING as above the cutoff are flagged (not automatically removed).
-    
-    # Compute LD-pruned SNP list for relatedness check and optional final PCA.
-
-    call LdPruning as LdPruningRelatedness {
-        input:
-            bed_file      = ChromosomeFilter.out_bed,
-            bim_file      = ChromosomeFilter.out_bim,
-            fam_file      = ChromosomeFilter.out_fam,
-            ld_regions    = ld_regions,
-            ld_window_kb  = ld_window_kb,
-            ld_step       = ld_step,
-            ld_r2         = ld_r2,
-            output_prefix = output_prefix + "_indepSNP_related",
-            label         = "Step 9a  LD pruning (relatedness)",
-            plink_bin     = plink_bin
-    }
-
-    call RelatednessCheck {
-        input:
-            bed_file      = ChromosomeFilter.out_bed,
-            bim_file      = ChromosomeFilter.out_bim,
-            fam_file      = ChromosomeFilter.out_fam,
-            prune_in      = LdPruningRelatedness.prune_in,
-            pihat_min     = pihat_min,
-            king_cutoff   = king_cutoff,
-            output_prefix = output_prefix + "_QC9",
-            plink_bin     = plink_bin,
-            plink2_bin    = plink2_bin
-    }
-
-    call CountBimFam as LogStep9 {
-        input:
-            bim_file = ChromosomeFilter.out_bim,
-            fam_file = ChromosomeFilter.out_fam,
-            label    = "Step 9   Relatedness check (flagged, not removed)"
-    }
-
-    String relatedness_log_line = LogStep9.line
-
+    # -- Step 9 (moved to Step 3c): Relatedness check was here.
+    # Related samples are now flagged before the PCA (Step 3c). See PrePCARelatednessCheck.
 
     # -- Step 10: Prepare for TOPMed imputation ----------------------------
     # Aligns strand orientation to the TOPMed reference panel using Will
@@ -590,15 +581,14 @@ workflow genotype_qc_preimputation {
         InitialVariantsPerChromosome.log_lines,
         [
             sex_check_log_line,
-            LdPruningPCA.log_line,
+            LdPruningPreRelatedness.log_line,
+            pre_pca_relatedness_log_line,
             AncestryPCA.log_line,
             LogStep5.line,
             LogStep6.line,
             LdPruningHet.log_line,
             LogStep7.line,
             LogStep8.line,
-            LdPruningRelatedness.log_line,
-            relatedness_log_line,
             FinalVariantsPerChromosome.log_line
         ],
         FinalVariantsPerChromosome.log_lines,
@@ -638,15 +628,15 @@ workflow genotype_qc_preimputation {
         File maf_freq_before = MacFilter.freq_before
         File maf_freq_after  = MacFilter.freq_after
 
-        # Relatedness outputs (relatedness filter is optional)
-        File? pihat_genome       = RelatednessCheck.pihat_genome       # All pairs above pihat_min
-        File? king_cutoff_out_id = RelatednessCheck.king_cutoff_out    # Samples removed by KING
+        # Relatedness outputs (from pre-PCA check; samples flagged but not removed)
+        File pihat_genome       = PrePCARelatednessCheck.pihat_genome    # All pairs above pihat_min
+        File king_cutoff_out_id = PrePCARelatednessCheck.king_cutoff_out # Flagged related samples
+        File king_cutoff_in_id  = PrePCARelatednessCheck.king_cutoff_in  # Unrelated samples (for downstream use)
 
         # LD-pruned SNP lists
-        File pca_prune_in      = LdPruningPCA.prune_in           # used for ancestry PCA
-        File prune_in          = LdPruningHet.prune_in           # used for heterozygosity check
-        File prune_out         = LdPruningHet.prune_out
-        File? related_prune_in = LdPruningRelatedness.prune_in   # used for relatedness check
+        File pca_prune_in = AncestryPCA.prune_in   # LD-pruned reference SNPs used for ancestry PCA
+        File prune_in     = LdPruningHet.prune_in  # used for heterozygosity check
+        File prune_out    = LdPruningHet.prune_out
 
         # Threshold sweep plot — shows SNP/sample retention across filtering thresholds
         File threshold_plot = ThresholdSweep.sweep_plot
@@ -1432,9 +1422,13 @@ task AncestryPCA {
         File   ref_bim              # 1000G reference .bim
         File   ref_fam              # 1000G reference .fam
         File   ref_psam             # 1000G sample metadata with SuperPop column
-        File   prune_in             # LD-pruned SNP list from LdPruningPCA
+        File   ld_regions           # High-LD regions to exclude during pruning
+        Int    ld_window_kb         # Sliding window size in kb
+        Int    ld_step              # Step size in SNPs
+        Float  ld_r2                # r² pruning threshold
         Int    n_pcs
         String output_prefix
+        String pca_reference_populations  # "ALL" or comma-separated e.g. "EUR,AFR,EAS,SAS,AMR"
         String plink_bin
         String plink2_bin
         String rscript_bin
@@ -1443,45 +1437,32 @@ task AncestryPCA {
     command <<<
         set -euo pipefail
 
-        # Step 1: find autosomal SNPs (chr 1-22 only) present in both datasets
-        # Non-autosomal SNPs are excluded: sex-chr heterozygosity and PAR effects
+        # Step 1: find autosomal SNPs (chr 1-22 only) present in both datasets.
+        # Non-autosomal SNPs excluded: sex-chr heterozygosity and PAR effects
         # distort principal components and are uninformative for ancestry inference.
 
-        # Phase 1: rsID intersection restricted to autosomes
+        # (a) rsID intersection restricted to autosomes
         awk '$1+0 >= 1 && $1+0 <= 22 {print $2}' ~{bim_file} | sort > study_snps.txt
         awk '$1+0 >= 1 && $1+0 <= 22 {print $2}' ~{ref_bim}  | sort > ref_snps.txt
         comm -12 study_snps.txt ref_snps.txt > rsid_overlap.txt
         n_rsid=$(wc -l < rsid_overlap.txt)
         echo "Autosomal SNPs overlapping by rsID: $n_rsid"
 
-        # Phase 2: filter to positionally concordant SNPs (same chr:pos in study and ref)
-        # Guards against rsID collisions or genome build mismatches.
+        # (b) positional concordance check — guards against rsID collisions or
+        #     genome build mismatches between study and reference.
         awk '$1+0 >= 1 && $1+0 <= 22 {print $2, $1"_"$4}' ~{bim_file} | sort -k1,1 > study_id_pos.txt
         awk '$1+0 >= 1 && $1+0 <= 22 {print $2, $1"_"$4}' ~{ref_bim}  | sort -k1,1 > ref_id_pos.txt
         join -1 1 -2 1 study_id_pos.txt ref_id_pos.txt \
-            | awk '$2 == $3 {print $1}' | sort > concordant_snps.txt
-        n_concordant=$(wc -l < concordant_snps.txt)
+            | awk '$2 == $3 {print $1}' | sort > overlap_snps.txt
+        n_concordant=$(wc -l < overlap_snps.txt)
         n_discord=$(( n_rsid - n_concordant ))
         if [ "$n_discord" -gt 0 ]; then
             echo "WARNING: Excluded $n_discord rsID-matched SNPs with discordant chr:pos (build mismatch?)" >&2
         fi
 
-        # Phase 3: intersect with LD-pruned SNP list (restricts PCA to ~independent SNPs)
-        sort ~{prune_in} > pruned_sorted.txt
-        comm -12 concordant_snps.txt pruned_sorted.txt > overlap_snps.txt
-        n_final=$(wc -l < overlap_snps.txt)
-        echo "Overlapping SNPs after LD pruning: $n_final"
-
-        # Step 2: extract autosomal overlapping SNPs from both datasets
-        ~{plink_bin} \
-            --bed ~{bed_file} \
-            --bim ~{bim_file} \
-            --fam ~{fam_file} \
-            --extract overlap_snps.txt \
-            --chr 1-22 \
-            --make-bed \
-            --out study_overlap
-
+        # Step 2: extract overlapping SNPs from the 1000G reference.
+        # PCA is computed on the reference only — PC axes are defined by 1000G
+        # population structure, independent of study composition or relatedness.
         ~{plink_bin} \
             --bed ~{ref_bed} \
             --bim ~{ref_bim} \
@@ -1491,82 +1472,85 @@ task AncestryPCA {
             --make-bed \
             --out ref_overlap
 
-        # Step 3: merge — first attempt
-        ~{plink_bin} \
-            --bed study_overlap.bed \
-            --bim study_overlap.bim \
-            --fam study_overlap.fam \
-            --bmerge ref_overlap.bed ref_overlap.bim ref_overlap.fam \
-            --make-bed \
-            --out merged_study_1kg || true
+        # Step 2b: optionally restrict reference to specified superpopulations.
+        # psam column layout: #IID(1) PAT(2) MAT(3) SEX(4) SuperPop(5) Population(6)
+        # plink1 --keep expects a two-column FID/IID file; FID is taken from the .fam.
+        ref_pca=ref_overlap
+        if [ "~{pca_reference_populations}" != "ALL" ]; then
+            awk -v pops="~{pca_reference_populations}" '
+                BEGIN { n=split(pops, a, ","); for (i=1;i<=n;i++) keep[a[i]]=1 }
+                NR>1 && $5 in keep { print $1 }
+            ' ~{ref_psam} | sort > pop_iids.txt
 
-        # If strand flip errors, attempt flip and retry
-        if [ -f merged_study_1kg-merge.missnp ]; then
-            echo "Strand flip issues detected — flipping and retrying merge"
+            # Resolve FID from the fam file (1000G fams often have FID=0)
+            awk 'NR==FNR { want[$1]=1; next } $2 in want { print $1, $2 }' \
+                pop_iids.txt ~{ref_fam} > ref_keep.txt
 
-            ~{plink_bin} \
-                --bed study_overlap.bed \
-                --bim study_overlap.bim \
-                --fam study_overlap.fam \
-                --flip merged_study_1kg-merge.missnp \
-                --make-bed \
-                --out study_overlap_flipped
+            n_ref_keep=$(wc -l < ref_keep.txt)
+            echo "Reference samples after population filter (~{pca_reference_populations}): $n_ref_keep"
 
-            ~{plink_bin} \
-                --bed study_overlap_flipped.bed \
-                --bim study_overlap_flipped.bim \
-                --fam study_overlap_flipped.fam \
-                --bmerge ref_overlap.bed ref_overlap.bim ref_overlap.fam \
-                --make-bed \
-                --out merged_study_1kg || true
-
-            # If still unresolvable SNPs remain after flip, exclude them
-            if [ -f merged_study_1kg-merge.missnp ]; then
-                echo "Excluding unresolvable SNPs after flip"
-                ~{plink_bin} \
-                    --bed study_overlap_flipped.bed \
-                    --bim study_overlap_flipped.bim \
-                    --fam study_overlap_flipped.fam \
-                    --exclude merged_study_1kg-merge.missnp \
-                    --make-bed \
-                    --out study_overlap_clean
-
-                ~{plink_bin} \
-                    --bed ref_overlap.bed \
-                    --bim ref_overlap.bim \
-                    --fam ref_overlap.fam \
-                    --exclude merged_study_1kg-merge.missnp \
-                    --make-bed \
-                    --out ref_overlap_clean
-
-                ~{plink_bin} \
-                    --bed study_overlap_clean.bed \
-                    --bim study_overlap_clean.bim \
-                    --fam study_overlap_clean.fam \
-                    --bmerge ref_overlap_clean.bed ref_overlap_clean.bim ref_overlap_clean.fam \
-                    --make-bed \
-                    --out merged_study_1kg
-            fi
+            ~{plink_bin} --bfile ref_overlap --keep ref_keep.txt --make-bed --out ref_overlap_pop
+            ref_pca=ref_overlap_pop
         fi
 
-        # Step 4: run PCA on merged dataset
+        # Step 3: LD prune the reference overlap.
+        ~{plink_bin} \
+            --bfile ${ref_pca} \
+            --exclude ~{ld_regions} --range \
+            --indep-pairwise ~{ld_window_kb} kb ~{ld_step} ~{ld_r2} \
+            --out ref_prune
+
+        n_pruned=$(wc -l < ref_prune.prune.in)
+        echo "Reference SNPs after LD pruning: $n_pruned"
+
+        # Step 4: PCA on the 1000G reference, saving variant weights for projection.
         ~{plink2_bin} \
-            --bed merged_study_1kg.bed \
-            --bim merged_study_1kg.bim \
-            --fam merged_study_1kg.fam \
-            --pca ~{n_pcs} \
+            --bfile ${ref_pca} \
+            --extract ref_prune.prune.in \
+            --pca ~{n_pcs} biallelic-var-wts \
             --out ~{output_prefix}
 
-        # Step 5: plot and assign ancestry labels
+        # Step 4a: reference allele frequencies for projection standardisation.
+        # These must match the frequencies used during PCA so that projected
+        # study scores land on the same scale as the reference eigenvec scores.
+        ~{plink2_bin} \
+            --bfile ${ref_pca} \
+            --extract ref_prune.prune.in \
+            --freq \
+            --out ref_prune
+
+        # Step 4b: project ALL study samples (related and unrelated) onto the
+        # reference PC space using the variant weights from step 4.
+        # eigenvec.var column layout: #CHROM(1) ID(2) MAJ(3) NONMAJ(4) PC1(5)...PCN(N+4)
+        # Column 2 = variant ID (rsID), column 4 = scored allele (non-major).
+        # PLINK2 resolves strand orientation automatically from the allele column.
+        # No chr:pos renaming is needed: the reference BIM uses rsIDs throughout.
+        score_end_col=$(( ~{n_pcs} + 4 ))
+        ~{plink2_bin} \
+            --bed ~{bed_file} \
+            --bim ~{bim_file} \
+            --fam ~{fam_file} \
+            --extract ref_prune.prune.in \
+            --chr 1-22 \
+            --read-freq ref_prune.afreq \
+            --score ~{output_prefix}.eigenvec.var 2 4 header no-mean-imputation variance-standardize \
+            --score-col-nums 5-${score_end_col} \
+            --out all_study_projected
+
+        # Step 5: plot and assign ancestry labels.
+        # The R script uses the 1000G eigenvec to build reference clusters and
+        # the all-sample sscore for classification (includes related samples).
         ~{rscript_bin} --vanilla ~{ancestry_pca_plot_r} \
             ~{output_prefix}.eigenvec \
+            all_study_projected.sscore \
             ~{ref_psam} \
             ~{n_pcs} \
-            ~{output_prefix}
+            ~{output_prefix} \
+            ~{output_prefix}.eigenval
 
         # Write pipeline log lines: SNP filter chain then ancestry assignment counts
         printf "%-42s  rsID: %d  concordant: %d  LD-pruned: %d\n" \
-            "Step 4   Ancestry PCA (SNPs)" "$n_rsid" "$n_concordant" "$n_final" > log_line.txt
+            "Step 4   Ancestry PCA (SNPs)" "$n_rsid" "$n_concordant" "$n_pruned" > log_line.txt
 
         if [ -f ~{output_prefix}_ancestry_assignments.tsv ]; then
             counts=$(awk -F'\t' '
@@ -1585,12 +1569,16 @@ task AncestryPCA {
         fi
     >>>
     output {
-        File eigenvec    = "~{output_prefix}.eigenvec"
-        File eigenval    = "~{output_prefix}.eigenval"
-        File pca_plot    = "~{output_prefix}_ancestry_pca.png"
-        File assignments = "~{output_prefix}_ancestry_assignments.tsv"
-        File log         = "~{output_prefix}.log"
-        String log_line  = read_string("log_line.txt")
+        File eigenvec     = "~{output_prefix}.eigenvec"
+        File eigenvec_var = "~{output_prefix}.eigenvec.var"
+        File eigenval     = "~{output_prefix}.eigenval"
+        File sscore       = "all_study_projected.sscore"
+        File pca_plot     = "~{output_prefix}_ancestry_pca.png"
+        File assignments  = "~{output_prefix}_ancestry_assignments.tsv"
+        File prune_in     = "ref_prune.prune.in"
+        File prune_out    = "ref_prune.prune.out"
+        File log          = "~{output_prefix}.log"
+        String log_line   = read_string("log_line.txt")
     }
     runtime { maxRetries: 1 }
 }
