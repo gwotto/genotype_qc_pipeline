@@ -23,6 +23,10 @@ Results are collected with:
 bash src/collect_cromwell_results.bash <cromwell-run-uuid-dir> ./results
 ```
 
+![Pipeline flowchart](genotype_qc_preimputation_mm.png)
+
+![Pipeline graph](genotype_qc_preimputation.png)
+
 ---
 
 ## Pipeline Steps
