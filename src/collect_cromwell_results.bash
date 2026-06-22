@@ -122,6 +122,14 @@ if [ -d "$CALL" ]; then
     done
 fi
 
+# -- Sample QC status table
+echo "Copying sample QC status table..."
+CALL="$BASE/call-CreateQCStatusTable/execution"
+if [ -d "$CALL" ]; then
+    cp "$CALL"/*_sample_qc_status.tsv "$OUTDIR/reports/" 2>/dev/null || true
+fi
+
+
 # -- Imputation VCFs (step 11 - PrepareForImputation) -------------------------
 echo "Copying imputation VCFs..."
 CALL="$BASE/call-PrepareForImputation/execution"

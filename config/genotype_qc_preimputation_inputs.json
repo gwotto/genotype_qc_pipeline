@@ -13,6 +13,7 @@
   "genotype_qc_preimputation.ancestry_pca_plot_r": "/path/to/genotype_qc_pipeline/src/ancestry_pca_plot.R",
   "genotype_qc_preimputation.mac_plot_r":    "/path/to/genotype_qc_pipeline/src/mac_plot.R",
   "genotype_qc_preimputation.check_bim_pl":       "/path/to/genotype_qc_pipeline/src/HRC-1000G-check-bim.pl",
+  "genotype_qc_preimputation.create_qc_table_r":       "/path/to/genotype_qc_pipeline/src/create_qc_status_table.R",
 
   "genotype_qc_preimputation.ld_regions":         "/path/to/high-LD-regions.txt",
   "genotype_qc_preimputation.hrc_ref_freq":    "/path/to/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz",

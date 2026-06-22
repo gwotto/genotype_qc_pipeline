@@ -49,6 +49,7 @@ version 1.0
 ## =============================================================================
 
 
+
 workflow genotype_qc_preimputation {
 
     input {
@@ -72,6 +73,7 @@ workflow genotype_qc_preimputation {
         File heterozygosity_outliers_r  # R script: flags samples >3 SD from mean het rate
         File threshold_plot_r   # R script: plots SNP/sample counts across thresholds
         File mac_plot_r      # R script: plots MAC distribution and barplot
+        File create_qc_table_r # R sript: creates table of ancestry assignments and relatedness checks
     
         # -- Tool paths -----------------------------------------------------
         # Change these if tools are not on $PATH
@@ -535,8 +537,15 @@ workflow genotype_qc_preimputation {
             label    = "Step 8   Chromosome filter"
     }
 
-    # -- Step 9 (moved to Step 3c): Relatedness check was here.
-    # Related samples are now flagged before the PCA (Step 3c). See PrePCARelatednessCheck.
+    # -- Create comprehensive QC status table (before imputation prep) ---
+    call CreateQCStatusTable {
+        input:
+            ancestry_assignments = AncestryPCA.assignments,
+            relatedness_flagged = PrePCARelatednessCheck.king_cutoff_out,
+            output_prefix = output_prefix,
+            rscript_bin = rscript_bin,
+            create_qc_table_r = create_qc_table_r
+    }
 
     # -- Step 10: Prepare for TOPMed imputation ----------------------------
     # Aligns strand orientation to the TOPMed reference panel using Will
@@ -640,6 +649,9 @@ workflow genotype_qc_preimputation {
 
         # Threshold sweep plot — shows SNP/sample retention across filtering thresholds
         File threshold_plot = ThresholdSweep.sweep_plot
+
+        # Sample QC status table — comprehensive reference for filtering decisions
+        File sample_qc_status_table = CreateQCStatusTable.qc_status_table  # FID, IID, ancestry, ancestry_prob, related
 
         # Ancestry PCA against 1000 Genomes
         File ancestry_pca_eigenvec     = AncestryPCA.eigenvec       # PC scores (study + 1000G)
@@ -1582,6 +1594,36 @@ task AncestryPCA {
     }
     runtime { maxRetries: 1 }
 }
+
+# Task: Create comprehensive sample QC status table
+# Combines ancestry assignments and relatedness flags into a single reference table
+# Output: FID, IID, ancestry, ancestry_prob, related
+task CreateQCStatusTable {
+    input {
+        File ancestry_assignments      # From AncestryPCA.assignments
+        File relatedness_flagged       # From RelatednessCheck.king_cutoff_out
+        String output_prefix
+        String rscript_bin
+        File create_qc_table_r
+    }
+        
+    command <<<
+        set -euo pipefail
+        ~{rscript_bin} ~{create_qc_table_r} \
+            ~{ancestry_assignments} \
+            ~{relatedness_flagged} \
+            ~{output_prefix}
+    >>>
+        
+    output {
+        File qc_status_table = "~{output_prefix}_sample_qc_status.tsv"
+    }
+        
+    runtime { maxRetries: 1 }
+}
+
+
+
 
 ## -----------------------------------------------------------------------------
 ## PrepareForImputation
