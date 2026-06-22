@@ -1,48 +1,45 @@
 {
-  
   "genotype_qc_preimputation.output_prefix": "array_qc",
-
   "genotype_qc_preimputation.ped_file": "/path/to/array.ped",
   "genotype_qc_preimputation.map_file": "/path/to/array.map",
 
-  
-  "genotype_qc_preimputation.handle_duplicates_r":       "/path/to/genotype_qc_pipeline/src/handle_duplicates.R",
-  "genotype_qc_preimputation.check_heterozygosity_r":    "/path/to/genotype_qc_pipeline/src/check_heterozygosity_rate.R",
+  "genotype_qc_preimputation.handle_duplicates_r": "/path/to/genotype_qc_pipeline/src/handle_duplicates.R",
+  "genotype_qc_preimputation.check_heterozygosity_r": "/path/to/genotype_qc_pipeline/src/check_heterozygosity_rate.R",
   "genotype_qc_preimputation.heterozygosity_outliers_r": "/path/to/genotype_qc_pipeline/src/heterozygosity_outliers_list.R",
   "genotype_qc_preimputation.threshold_plot_r": "/path/to/genotype_qc_pipeline/src/threshold_plot.R",
   "genotype_qc_preimputation.ancestry_pca_plot_r": "/path/to/genotype_qc_pipeline/src/ancestry_pca_plot.R",
-  "genotype_qc_preimputation.mac_plot_r":    "/path/to/genotype_qc_pipeline/src/mac_plot.R",
-  "genotype_qc_preimputation.check_bim_pl":       "/path/to/genotype_qc_pipeline/src/HRC-1000G-check-bim.pl",
-  "genotype_qc_preimputation.create_qc_table_r":       "/path/to/genotype_qc_pipeline/src/create_qc_status_table.R",
-
-  "genotype_qc_preimputation.ld_regions":         "/path/to/high-LD-regions.txt",
-  "genotype_qc_preimputation.hrc_ref_freq":    "/path/to/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz",
-
-  "genotype_qc_preimputation.ref_1kg_bed":  "/path/to/1kg_pruned_final.bed",
-  "genotype_qc_preimputation.ref_1kg_bim":  "/path/to/1kg_pruned_final.bim",
-  "genotype_qc_preimputation.ref_1kg_fam":  "/path/to/1kg_pruned_final.fam",
+  "genotype_qc_preimputation.mac_plot_r": "/path/to/genotype_qc_pipeline/src/mac_plot.R",
+  "genotype_qc_preimputation.check_bim_pl": "/path/to/genotype_qc_pipeline/src/HRC-1000G-check-bim.pl",
+  "genotype_qc_preimputation.create_qc_table_r": "/path/to/genotype_qc_pipeline/src/create_qc_status_table.R",
+  
+  "genotype_qc_preimputation.ld_regions": "/path/to/high-LD-regions.txt",
+  "genotype_qc_preimputation.hrc_ref_freq": "/path/to/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz",
+  
+  "genotype_qc_preimputation.ref_1kg_bed": "/path/to/1kg_pruned_final.bed",
+  "genotype_qc_preimputation.ref_1kg_bim": "/path/to/1kg_pruned_final.bim",
+  "genotype_qc_preimputation.ref_1kg_fam": "/path/to/1kg_pruned_final.fam",
   "genotype_qc_preimputation.ref_1kg_psam": "/path/to/all_phase3.psam",
-
-  "genotype_qc_preimputation.plink_bin":   "plink",
-  "genotype_qc_preimputation.plink2_bin":  "plink2",
+  
+  "genotype_qc_preimputation.plink_bin": "plink",
+  "genotype_qc_preimputation.plink2_bin": "plink2",
   "genotype_qc_preimputation.rscript_bin": "Rscript",
-
-  "genotype_qc_preimputation.perl_bin":  "perl",
-  "genotype_qc_preimputation.bcftools_bin":  "bcftools",
-  "genotype_qc_preimputation.bgzip_bin":  "bgzip",
-  "genotype_qc_preimputation.tabix_bin":  "tabix",
-
+  "genotype_qc_preimputation.perl_bin": "perl",
+  "genotype_qc_preimputation.bcftools_bin": "bcftools",
+  "genotype_qc_preimputation.bgzip_bin": "bgzip",
+  "genotype_qc_preimputation.tabix_bin": "tabix",
+  
   "genotype_qc_preimputation.geno_threshold": 0.03,
   "genotype_qc_preimputation.mind_threshold": 0.05,
-  "genotype_qc_preimputation.hwe_pvalue":     0.000001,
-  "genotype_qc_preimputation.ld_r2":          0.1,
-  "genotype_qc_preimputation.ld_window_kb":   50,
-  "genotype_qc_preimputation.ld_step":        5,
-  "genotype_qc_preimputation.pihat_min":      0.2,
-  "genotype_qc_preimputation.king_cutoff":    0.0884,
-  "genotype_qc_preimputation.n_pcs":          10,
-  "genotype_qc_preimputation.mac_threshold":  50,
+  "genotype_qc_preimputation.hwe_pvalue": 1e-06,
+  "genotype_qc_preimputation.ld_r2": 0.1,
+  "genotype_qc_preimputation.ld_window_kb": 200,
+  "genotype_qc_preimputation.ld_step": 1,
+  "genotype_qc_preimputation.pihat_min": 0.2,
+  "genotype_qc_preimputation.king_cutoff": 0.0884,
+  "genotype_qc_preimputation.n_pcs": 10,
+  "genotype_qc_preimputation.mac_threshold": 50,
   "genotype_qc_preimputation.chr_args": "--chr 1-23",
   "genotype_qc_preimputation.test_populations": "ALL",
-  "genotype_qc_preimputation.pca_reference_populations": "EUR,AFR,EAS,SAS"
+  "genotype_qc_preimputation.pca_reference_populations": "EUR,AFR,EAS,SAS",
+  "genotype_qc_preimputation.ancestry_prob_threshold": 0.5
 }

@@ -4,35 +4,49 @@
 ##
 ## PURPOSE
 ##   Assigns superpopulation ancestry labels to all study samples using a
-##   random forest classifier trained on 1000G samples with known labels.
-##   PCA is computed on 1000G only; all study samples (related and unrelated)
-##   are projected onto the reference PC space via PLINK2 variant weights,
-##   giving stable ancestry axes independent of study composition.
+##   random forest classifier trained on 1000G reference samples with known
+##   labels. PCA is computed on the 1000G reference panel only; all study
+##   samples (including related pairs) are projected into the reference PC
+##   space using PLINK2 variant weights, giving stable axes independent of
+##   study composition.
 ##
 ## USAGE
-##   Rscript ancestry_pca_plot.R <eigenvec> <sscore> <psam> <n_pcs> <output_prefix>
+##   Rscript ancestry_pca_plot.R \
+##       <eigenvec> <sscore> <psam> <n_pcs> <output_prefix> \
+##       <eigenval> <ancestry_prob_threshold>
 ##
 ## ARGUMENTS
-##   eigenvec        PLINK2 .eigenvec file (1000G reference PCA)
-##   sscore          PLINK2 .sscore file   (ALL study samples projected onto reference PCs)
-##   psam            1000G .psam file with SuperPop column (tab-separated)
-##   n_pcs           Number of PCs to use for classification (e.g. 10)
-##   output_prefix   Prefix for output files
-##   eigenval        PLINK2 .eigenval file (PC eigenvalues, one per line)
+##   eigenvec                 PLINK2 .eigenvec  — reference-panel PC scores
+##   sscore                   PLINK2 .sscore    — study samples projected via --score
+##   psam                     1000G  .psam      — sample metadata with SuperPop column
+##   n_pcs                    Number of PCs to use for classification (e.g. 10)
+##   output_prefix            Prefix for all output files
+##   eigenval                 PLINK2 .eigenval  — one eigenvalue per line
+##   ancestry_prob_threshold  RF probability threshold for assignment (0–1, e.g. 0.5)
+##                            Samples below this are labelled "unassigned".
+##
+## SCALE CONVERSION
+##   PLINK2 --score outputs SCORE_AVG, which differs from eigenvec values by a
+##   per-PC factor: eigenvec_k = SCORE_AVG_k × 2 / sqrt(eigenvalue_k).
+##   This script applies that conversion so projected study scores are on the
+##   same scale as the reference eigenvec before classification.
 ##
 ## OUTPUTS
-##   <output_prefix>_ancestry_pca.png         PC1 vs PC2 scatter plot
-##   <output_prefix>_ancestry_assignments.tsv Per-sample ancestry assignments
+##   <output_prefix>_ancestry_pca.png         Grid of PC pair scatter plots
+##                                            (PC1/2, PC3/4, PC5/6, PC7/8, PC9/10)
+##   <output_prefix>_ancestry_assignments.tsv Per-sample assignments:
+##                                            FID, IID, superpop, probability
 ## =============================================================================
 
 suppressPackageStartupMessages({
   library(tidyverse)
+  library(patchwork)
   library(randomForest)
 })
 
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) != 6) {
-  stop("Usage: Rscript ancestry_pca_plot.R <eigenvec> <sscore> <psam> <n_pcs> <output_prefix> <eigenval>")
+if (length(args) != 7) {
+  stop("Usage: Rscript ancestry_pca_plot.R <eigenvec> <sscore> <psam> <n_pcs> <output_prefix> <eigenval> <ancestry_prob_threshold>")
 }
 
 eigenvec_file  <- args[1]
@@ -41,6 +55,7 @@ psam_file      <- args[3]
 n_pcs          <- as.integer(args[4])
 output_prefix  <- args[5]
 eigenval_file  <- args[6]
+ancestry_prob_threshold <- as.numeric(args[7])
 
 pc_cols <- paste0("PC", seq_len(n_pcs))
 
@@ -134,8 +149,8 @@ study <- study |>
   mutate(
     predicted_pop  = predict(rf_model, newdata = study |> select(all_of(pc_cols))),
     predicted_prob = apply(pred_probs, 1, max),
-    # Assign ancestry only if probability > 0.8; otherwise mark as unassigned
-    superpop_final = ifelse(predicted_prob > 0.8, as.character(predicted_pop), "unassigned")
+    # Assign ancestry only if probability > predicted_prob; otherwise mark as unassigned
+    superpop_final = ifelse(predicted_prob > ancestry_prob_threshold, as.character(predicted_pop), "unassigned")
   )
 
 # -----------------------------------------------------------------------------
@@ -152,11 +167,11 @@ assignments <- study |>
 write_tsv(assignments, paste0(output_prefix, "_ancestry_assignments.tsv"))
 
 message(sprintf("Ancestry assignments written to %s_ancestry_assignments.tsv", output_prefix))
-message("Superpopulation assignments (probability > 0.8):")
+message(sprintf("Superpopulation assignments (probability > %.2f):", ancestry_prob_threshold))
 assignments |> count(superpop) |> print()
 n_unassigned <- sum(assignments$superpop == "unassigned")
 if (n_unassigned > 0) {
-  message(sprintf("Note: %d samples marked 'unassigned' (probability ≤ 0.8)", n_unassigned))
+  message(sprintf("Note: %d samples marked 'unassigned' (probability ≤ %.2f)", n_unassigned, ancestry_prob_threshold))
 }
 
 # -----------------------------------------------------------------------------
@@ -173,16 +188,48 @@ superpop_colours <- c(
 
 plot_data <- study |> mutate(pop = as.character(superpop_final))
 
-p <- ggplot(plot_data, aes(x = PC1, y = PC2, colour = pop)) +
+# Create multiple PC plots (PC1 vs PC2, PC3 vs PC4, etc.)
+p1 <- ggplot(plot_data, aes(x = PC1, y = PC2, colour = pop)) +
   geom_point(alpha = 0.7, size = 1.5) +
   scale_colour_manual(values = superpop_colours, name = "Superpopulation") +
-  labs(
-    title = "Ancestry PCA: study samples projected onto 1000G reference",
-    x = "PC1",
-    y = "PC2"
-  ) +
+  labs(x = "PC1", y = "PC2") +
   theme_bw() +
   theme(legend.position = "right")
+
+p2 <- ggplot(plot_data, aes(x = PC3, y = PC4, colour = pop)) +
+  geom_point(alpha = 0.7, size = 1.5) +
+  scale_colour_manual(values = superpop_colours, name = "Superpopulation") +
+  labs(x = "PC3", y = "PC4") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+p3 <- ggplot(plot_data, aes(x = PC5, y = PC6, colour = pop)) +
+  geom_point(alpha = 0.7, size = 1.5) +
+  scale_colour_manual(values = superpop_colours, name = "Superpopulation") +
+  labs(x = "PC5", y = "PC6") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+p4 <- ggplot(plot_data, aes(x = PC7, y = PC8, colour = pop)) +
+  geom_point(alpha = 0.7, size = 1.5) +
+  scale_colour_manual(values = superpop_colours, name = "Superpopulation") +
+  labs(x = "PC7", y = "PC8") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+p5 <- ggplot(plot_data, aes(x = PC9, y = PC10, colour = pop)) +
+  geom_point(alpha = 0.7, size = 1.5) +
+  scale_colour_manual(values = superpop_colours, name = "Superpopulation") +
+  labs(x = "PC9", y = "PC10") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+# Combine all plots
+p <- (p1 + p2 + p3) / (p4 + p5) +
+  plot_annotation(
+    title = "Ancestry PCA: study samples projected onto 1000G reference",
+    theme = theme(plot.title = element_text(hjust = 0.5, size = 14))
+  )
 
 ggsave(paste0(output_prefix, "_ancestry_pca.png"), plot = p, width = 8, height = 6, dpi = 150)
 message(sprintf("PCA plot saved to %s_ancestry_pca.png", output_prefix))

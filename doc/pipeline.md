@@ -1,269 +1,335 @@
 # Genotype QC Pre-Imputation Pipeline
 
+**Version 0.2.0 — June 2026**
+
 ## Overview
 
-This WDL workflow performs comprehensive quality control (QC) on genotype data before imputation. It implements a multi-stage filtering approach that balances data retention with stringency, including ancestry-aware filtering and relatedness detection.
+`src/genotype_qc_preimputation.wdl` is a WDL 1.0 workflow that performs
+standard pre-imputation quality control on genotyping array data. It follows
+the Anderson et al. (2010) protocol with ancestry-aware extensions, and
+produces a clean PLINK binary dataset and per-chromosome VCFs ready for
+submission to imputation servers (HRC, TOPMed).
 
-**Current Version:** 2.0 (Updated June 2026)
+The pipeline is run with Cromwell:
+
+```bash
+java -jar cromwell-92.jar run src/genotype_qc_preimputation.wdl \
+     -i config/genotype_qc_preimputation_inputs.json
+```
+
+Results are collected with:
+
+```bash
+bash src/collect_cromwell_results.bash <cromwell-run-uuid-dir> ./results
+```
+
+---
 
 ## Pipeline Steps
 
-### Step 0: Data Preparation
-- **ConvertToBinary** (optional): Converts PLINK text format (ped/map) to binary format (bed/bim/fam)
-- **HandleDuplicates**: Resolves duplicate sample IDs and prepares data for analysis
+### Step 0 — Format conversion (optional)
 
-### Step 1: SNP Missingness Filter (--geno)
-- Removes SNPs with ≥X% missing genotypes across samples
-- Threshold: `geno_threshold` (default: 0.03 = 3%)
-- **Rationale**: Unreliable genotype calls
+If the input is in PLINK text format (ped/map), it is converted to binary
+(bed/bim/fam). Skip this by supplying bed/bim/fam directly.
 
-### Step 2: Sample Missingness Filter (--mind)
-- Removes samples with ≥X% missing genotypes
-- Threshold: `mind_threshold` (default: 0.05 = 5%)
-- **Rationale**: Low-quality samples
+### Step 0b — Duplicate sample IDs
 
-### **Threshold Sweep Visualization** (Informational)
-- Runs PLINK with multiple thresholds (0.01, 0.02, 0.05, 0.10, 0.20) for both geno and mind
-- Produces plots showing SNP and sample retention across thresholds
-- **Purpose**: Helps validate that chosen thresholds represent reasonable trade-offs
-- **Output**: `threshold_plot.png`
+Duplicate IDs in the FAM file cause downstream PLINK errors. The R script
+`handle_duplicates.R` appends a numeric suffix to make each ID unique and
+writes a log of affected samples.
 
-### Step 3: Sex Check
-- Validates reported vs. inferred sex using X-chromosome heterozygosity
-- **Conditional**: Only runs if X-chromosome SNPs are present
-- Removes samples with inconsistent sex assignments
-- **Output**: Sex check report and list of failed samples (if any)
+### Step 1 — SNP missingness filter (`--geno`)
 
-### Step 4: Ancestry PCA Against 1000 Genomes
-- Projects study samples onto 1000 Genomes Phase 3 principal components
-- Assigns superpopulation labels (EUR, AFR, EAS, SAS, AMR) to each sample
-- **Inputs Required**:
-  - 1000G reference panel (bed/bim/fam format)
-  - 1000G sample metadata with superpopulation labels
-- **Outputs**:
-  - Per-sample superpopulation assignments: `ancestry_assignments.tsv`
-  - PCA eigenvectors and eigenvalues
-  - PCA plot with study samples overlaid on 1000G
+Removes variants with a missing genotype rate above `geno_threshold`.
+Run before sample filtering so that poorly genotyped SNPs do not inflate
+per-sample missingness.
 
-### Step 5: MAC Filter (Full Cohort)
-- Removes monomorphic SNPs and variants with minor allele count < X
-- Threshold: `mac_threshold` (default: 50)
-- **Rationale**: Rare variants tested on full cohort (not ancestry subsets) because rarity is a cohort-level property
-- **Output**: MAC distribution plot with allele frequencies (not counts)
+### Step 2 — Sample missingness filter (`--mind`)
 
-### Step 6: Hardy-Weinberg Equilibrium Filter (Ancestry Subset Detection, Full Cohort Removal)
-- **Detection**: Tests HWE separately within each user-specified ancestry group
-- **Rationale**: Allele frequencies differ by ancestry; testing on subset avoids false HWE violations in admixed samples
-- **Removal**: Removes failed SNPs from ENTIRE cohort (prevents artifacts in any ancestry group)
-- Threshold: `hwe_pvalue` (default: 1e-6)
-- **Inputs**: 
-  - `ancestry_populations`: Comma-separated list (e.g., "EUR,AFR") or "ALL" for entire cohort
-  - Ancestry assignments from Step 4
+Removes samples with a missing genotype rate above `mind_threshold`.
 
-### Step 7a: LD Pruning (Helper for Heterozygosity)
-- Generates independent SNP list using specified LD threshold
-- Used only as input for heterozygosity detection (Step 7b)
-- Parameters: `ld_r2` (default: 0.1), `ld_window_kb` (default: 50), `ld_step` (default: 5)
+### Threshold sweep (informational)
 
-### Step 7b: Heterozygosity Outlier Removal (Ancestry Subset Detection, Subset Removal)
-- **Detection**: Identifies samples with heterozygosity >3 SD from mean within ancestry group
-- **Removal**: Removes outlier SAMPLES (not variants) only from tested ancestry group
-- **Merge**: Combines het-filtered ancestry group with untested populations
-- **Rationale**: Heterozygosity is sample-level; removing from subset avoids discarding samples from untested groups
-- **Outputs**: 
-  - Per-sample heterozygosity rates
-  - Heterozygosity plots and outlier list
+Runs PLINK across a grid of geno/mind values (0.01, 0.02, 0.05, 0.10,
+0.20) and plots variant and sample retention. Used to validate that the
+chosen thresholds represent sensible trade-offs. No data are removed.
 
-### Step 8: Chromosome Filter
-- Restricts analysis to specified chromosomes (default: 1-23, autosomes + X)
-- Parameter: `chr_args` (e.g., "--chr 1-22" for autosomes only)
+Output: `threshold_plot.png`
 
-### Step 9: Relatedness Check (KING)
-- Detects cryptic relatedness using KING algorithm
-- **Important**: Samples are FLAGGED, not automatically removed
-- Threshold: `king_cutoff` (default: 0.0884 ≈ 3rd-degree relative)
-- Threshold: `pihat_min` (default: 0.2 for IBD pairs)
-- **Outputs**:
-  - Relatedness report: `king_cutoff_related_samples.txt` (samples to optionally remove)
-  - Detailed IBD pairs: `pihat.genome`
-- **User Decision**: Users can manually remove related samples using this file in downstream PLINK association tests
+### Step 3 — Sex check
 
-### Step 10: Prepare for Imputation
-- Harmonizes SNPs with imputation reference (HRC or TOPMed)
-- Checks allele strand, ref/alt assignments
-- Creates VCFs per chromosome (GRCh37/GRCh38 compatible)
-- Outputs ready for imputation server submission
+Infers sex from X-chromosome heterozygosity and compares it to the FAM
+file. Samples where the reported and inferred sex disagree are removed.
+Skipped automatically if the dataset has no X-chromosome SNPs. Samples
+with sex code 0 ("unknown") are retained.
 
-## Configuration File
+### Step 4 — Ancestry PCA
 
-### Location
-`config/genotype_qc_preimputation_inputs.json`
+PCA is computed on the 1000 Genomes Phase 3 reference panel only, then
+all study samples (including related pairs) are projected into that
+reference PC space. This keeps the PC axes stable and independent of
+study composition.
 
-### Input Variables (35 total)
+**Procedure:**
 
-#### Data Input Paths
-- **ped_file**: Path to PLINK PED file (text genotypes) - use if data is in text format
-- **map_file**: Path to PLINK MAP file - use with ped_file
-- **bed_file**: Path to PLINK BED file (binary) - use if data is already binary
-- **bim_file**: Path to PLINK BIM file - use with bed_file
-- **fam_file**: Path to PLINK FAM file - use with bed_file
-- **Note**: Provide EITHER (ped_file + map_file) OR (bed_file + bim_file + fam_file)
+1. SNPs are matched between study and reference by rsID. A positional
+   concordance check discards rsID-matched variants that sit at different
+   chr:pos coordinates (catches genome-build mismatches).
+2. If `pca_reference_populations` is not `"ALL"`, the reference panel is
+   filtered to the listed superpopulations before PCA.
+3. The filtered reference is LD-pruned (same parameters as step 7a).
+4. PLINK2 `--pca biallelic-var-wts` computes `n_pcs` PCs on the reference
+   and saves per-variant weights in `.eigenvec.var`.
+5. Reference allele frequencies are saved (`--freq`) for use in step 6.
+6. All study samples are projected with `--score … variance-standardize`.
+   The raw `SCORE_AVG` values are rescaled to the eigenvec scale before
+   classification: `eigenvec_k = SCORE_AVG_k × 2 / sqrt(eigenvalue_k)`.
+7. A random forest (500 trees, `randomForest` R package) is trained on the
+   reference eigenvec scores and their known superpopulation labels, then
+   applied to all study samples. Each sample receives:
+   - `superpop`: predicted superpopulation (`EUR`, `AFR`, `EAS`, `SAS`,
+     `AMR`), or `"unassigned"` if the prediction probability is below
+     `ancestry_prob_threshold`.
+   - `probability`: maximum class probability from the random forest.
 
-#### Output Settings
-- **output_prefix**: Prefix for all output files (default: "array_qc")
+**Outputs:**
 
-#### QC Thresholds
-- **geno_threshold**: Max SNP missingness (0.0-1.0, default: 0.03 = 3%)
-- **mind_threshold**: Max sample missingness (0.0-1.0, default: 0.05 = 5%)
-- **hwe_pvalue**: Min HWE p-value to retain SNP (default: 1e-6)
-- **mac_threshold**: Min minor allele count (default: 50)
-- **pihat_min**: Min IBD coefficient for relatedness (default: 0.2)
-- **king_cutoff**: KING kinship cutoff (default: 0.0884 for 3rd degree)
+| File | Description |
+|------|-------------|
+| `*_ancestry_assignments.tsv` | FID, IID, superpop, probability |
+| `*_ancestry_pca.png` | Grid of PC pair plots (PC1/2 … PC9/10), study samples coloured by predicted superpopulation |
+| `*.eigenvec` | Reference-panel PC scores |
+| `*.eigenvec.var` | Per-variant PC weights |
+| `*.eigenval` | PC eigenvalues |
+| `all_study_projected.sscore` | Raw projected scores for all study samples |
 
-#### LD Pruning Parameters
-- **ld_r2**: Max r² for LD pruning (default: 0.1)
-- **ld_window_kb**: Sliding window size in kb (default: 50)
-- **ld_step**: Window step size in SNPs (default: 5)
-- **ld_regions**: Path to file with high-LD regions to exclude (BED format)
+### Step 5 — MAC filter
 
-#### Ancestry & Population Selection
-- **ancestry_populations**: Population(s) for ancestry-aware filtering
-  - Format: Comma-separated list (e.g., "EUR,AFR") or "ALL"
-  - Default: "ALL"
-  - **Important**: Values must match superpopulation labels in 1000G assignments (EUR, AFR, EAS, SAS, AMR)
-  - **Effect**: MAC and HWE detection will only use specified populations
+Removes monomorphic variants and variants with minor allele count below
+`mac_threshold`. Applied to the full cohort because rarity is a global
+property of the dataset.
 
-#### Reference Files (1000 Genomes)
-- **ref_1kg_bed/bim/fam**: Path to 1000G Phase 3 reference panel (binary PLINK format)
-  - Should be LD-pruned and filtered to biallelic SNPs only
-- **ref_1kg_psam**: 1000G sample metadata file with SuperPop labels (EUR, AFR, EAS, SAS, AMR)
-- **n_pcs**: Number of principal components to compute (default: 10)
+Output: `mac_plot.png`
 
-#### Imputation Reference
-- **hrc_ref_freq**: Path to HRC or 1000G allele frequency file (typically .gz)
-  - Example: HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz
-- **check_bim_pl**: Path to Will Rayner's HRC-1000G-check-bim.pl script
+### Step 6 — HWE filter
 
-#### Chromosome Selection
-- **chr_args**: PLINK chromosome filter arguments (default: "--chr 1-23")
-  - Examples: "--chr 1-22" (autosomes only), "--chr 1-22 X" (auto + X)
+Hardy-Weinberg equilibrium is tested separately within each superpopulation
+listed in `test_populations`. Variants failing HWE in any tested population
+are removed from the entire cohort. Testing on a subset prevents false
+violations caused by population stratification in admixed samples.
 
-#### Script Paths
-- **handle_duplicates_r**: Path to R script for duplicate handling
-- **check_heterozygosity_r**: Path to R script for heterozygosity computation
-- **heterozygosity_outliers_r**: Path to R script for outlier detection
-- **ancestry_pca_plot_r**: Path to R script for PCA visualization
-- **mac_plot_r**: Path to R script for MAC distribution plot
-- **threshold_plot_r**: Path to R script for threshold sweep visualization
+### Step 7a — LD pruning (helper)
 
-#### Tool Paths
-- **plink_bin**: Path to PLINK 1.9 binary (or command name if in PATH)
-- **plink2_bin**: Path to PLINK 2.0 binary (for KING relatedness)
-- **rscript_bin**: Path to Rscript binary (or command name if in PATH)
-- **perl_bin**: Path to Perl interpreter (or command name if in PATH)
-- **bcftools_bin**: Path to bcftools binary (or command name if in PATH)
-- **bgzip_bin**: Path to bgzip binary (or command name if in PATH)
-- **tabix_bin**: Path to tabix binary (or command name if in PATH)
+Produces an independent SNP list using `ld_window_kb`, `ld_step`, and
+`ld_r2`. Used only as input to the heterozygosity check; not applied to
+the final dataset.
 
-## Running the Pipeline
+### Step 7b — Heterozygosity outlier removal
 
-### Step 1: Prepare Input Data
-```bash
-# Ensure you have PLINK binary files (bed/bim/fam) or text files (ped/map)
-ls -lh your_data.*
+Per-sample heterozygosity (F-statistic) is computed on LD-pruned variants.
+Samples more than 3 SD from the mean within the tested ancestry subset are
+flagged and removed — but only from that subset. The removed samples are
+not propagated to the rest of the cohort, preserving samples from
+populations not covered by `test_populations`.
+
+### Step 8 — Chromosome filter
+
+Restricts the dataset to the chromosomes listed in `chr_args`. The output
+of this step is the **final QC dataset** used for all downstream analysis.
+
+### Step 9 — Relatedness check (KING)
+
+KING kinship coefficients are computed on the full post-QC dataset. Pairs
+with kinship above `king_cutoff` are flagged. Samples are **not removed**
+automatically. The output file lists one member of each related pair and
+can be supplied to PLINK `--remove` in downstream association tests.
+
+Output: `relatedness_flagged_samples.txt`
+
+### Step 10 — Prepare for imputation
+
+Will Rayner's `HRC-1000G-check-bim.pl` harmonises the dataset against the
+HRC or TOPMed frequency reference: checks strand, ref/alt assignment, and
+frequency concordance. The script generates per-chromosome VCFs (bgzipped
+and tabix-indexed) ready for submission.
+
+---
+
+## Configuration
+
+All parameters live in `config/genotype_qc_preimputation_inputs.json`.
+Every key is prefixed with `genotype_qc_preimputation.`.
+
+### Input files
+
+| Parameter | Description |
+|-----------|-------------|
+| `bed_file`, `bim_file`, `fam_file` | PLINK binary input. Supply these **or** ped/map, not both. |
+| `ped_file`, `map_file` | PLINK text input (converted to binary automatically). |
+| `output_prefix` | String prefix for all output files (e.g. `"array_qc"`). |
+
+### Reference files
+
+| Parameter | Description |
+|-----------|-------------|
+| `ld_regions` | High-LD genomic regions excluded from LD pruning. Tab-separated, four columns: chr start end name (hg19). Download with `bash src/download_resources.bash`. |
+| `ref_1kg_bed`, `ref_1kg_bim`, `ref_1kg_fam` | 1000 Genomes Phase 3 reference panel in PLINK binary format. Must be autosomal, biallelic SNPs only. |
+| `ref_1kg_psam` | 1000G sample metadata file. Must contain a `SuperPop` column with values `EUR`, `AFR`, `EAS`, `SAS`, `AMR`. |
+| `hrc_ref_freq` | HRC r1.1 GRCh37 allele frequency file (`.tab.gz`). Download with `bash src/download_resources.bash`. |
+
+### Script paths
+
+All scripts in `src/`. Set these to absolute paths.
+
+| Parameter | Script |
+|-----------|--------|
+| `handle_duplicates_r` | `src/handle_duplicates.R` |
+| `check_heterozygosity_r` | `src/check_heterozygosity_rate.R` |
+| `heterozygosity_outliers_r` | `src/heterozygosity_outliers_list.R` |
+| `ancestry_pca_plot_r` | `src/ancestry_pca_plot.R` |
+| `mac_plot_r` | `src/mac_plot.R` |
+| `threshold_plot_r` | `src/threshold_plot.R` |
+| `create_qc_table_r` | `src/create_qc_status_table.R` |
+| `check_bim_pl` | `src/HRC-1000G-check-bim.pl` |
+
+### Tool paths
+
+Default to bare command names (assumes tools are on `$PATH`). Override
+with absolute paths if needed.
+
+| Parameter | Tool | Minimum version |
+|-----------|------|-----------------|
+| `plink_bin` | PLINK 1.9 | 1.9 |
+| `plink2_bin` | PLINK 2.0 | 2.0 |
+| `rscript_bin` | R | 4.0 |
+| `perl_bin` | Perl | 5.x |
+| `bcftools_bin` | bcftools | — |
+| `bgzip_bin` | bgzip | — |
+| `tabix_bin` | tabix | — |
+
+### QC thresholds
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `geno_threshold` | `0.03` | Maximum per-SNP missing rate (0–1). |
+| `mind_threshold` | `0.05` | Maximum per-sample missing rate (0–1). |
+| `hwe_pvalue` | `1e-6` | Minimum HWE p-value to retain a variant. |
+| `mac_threshold` | `50` | Minimum minor allele count across the full cohort. |
+| `pihat_min` | `0.2` | Minimum IBD coefficient for flagging related pairs. |
+| `king_cutoff` | `0.0884` | KING kinship cutoff (~3rd-degree relative). |
+
+### LD pruning parameters
+
+Used in two places: ancestry PCA (step 4) and heterozygosity check
+(step 7a). Same parameters apply to both.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `ld_window_kb` | `200` | Sliding window size in kilobases. |
+| `ld_step` | `1` | Window step size in SNPs. |
+| `ld_r2` | `0.1` | Maximum r² for a variant to be retained. |
+
+### Ancestry PCA parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `n_pcs` | `10` | Number of principal components to compute and use for ancestry classification. |
+| `pca_reference_populations` | `"ALL"` | Comma-separated list of 1000G superpopulations whose samples are included in the reference PCA. Possible values: any subset of `EUR,AFR,EAS,SAS,AMR`, or `"ALL"` to use all 2504 Phase 3 samples. Restricting to relevant populations can sharpen cluster separation for studies with limited ancestry diversity. |
+| `ancestry_prob_threshold` | `0.5` | Random forest prediction probability below which a study sample is labelled `"unassigned"` rather than assigned to a superpopulation. Range 0–1; increase for stricter assignment. |
+
+### Ancestry-aware filtering parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `test_populations` | `"ALL"` | Comma-separated list of superpopulations on which HWE and heterozygosity detection are run (e.g. `"EUR"`, `"EUR,AFR"`). Use `"ALL"` to test the full cohort without stratification. Values must match the `superpop` column of the ancestry assignments file. |
+
+### Imputation and chromosome parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `chr_args` | `"--chr 1-23"` | PLINK chromosome filter applied at step 8. Use `"--chr 1-22"` for autosomes only or `"--autosome"` as an alternative. |
+
+---
+
+## Output structure
+
+After running `bash src/collect_cromwell_results.bash <run-dir> ./results`:
+
+```
+results/
+  qc_dataset/          Final PLINK files (bed/bim/fam) — output of step 8
+  vcfs/                chr1–23.vcf.gz + .tbi — imputation-ready VCFs
+  pca/                 eigenvec, eigenval, eigenvec.var, sscore,
+                       ancestry_assignments.tsv, ancestry_pca.png
+  plots/               threshold_plot.png, mac_plot.png, het plots
+  reports/             sex check, het outlier list, relatedness flags,
+                       HWE fail list, per-chr freq files, pipeline log
 ```
 
-### Step 2: Update Configuration
+**Key files:**
+
+| File | Description |
+|------|-------------|
+| `pca/ancestry_assignments.tsv` | Per-sample: FID, IID, superpop, probability. Use to select ancestry strata for downstream analysis. |
+| `reports/relatedness_flagged_samples.txt` | One member of each related pair. Pass to `plink --remove` in association tests if needed. |
+| `qc_dataset/*.bed/bim/fam` | Final QC'd genotype data. |
+| `vcfs/chr*.vcf.gz` | Per-chromosome VCFs for imputation servers. |
+
+---
+
+## Reference files — how to obtain
+
 ```bash
-# Edit config/genotype_qc_preimputation_inputs.json
-# - Set input file paths
-# - Update tool paths if needed
-# - Adjust QC thresholds if desired
-# - Specify ancestry_populations (e.g., "EUR" or "EUR,AFR")
+# High-LD regions (hg19) and HRC frequency file
+bash src/download_resources.bash
+
+# 1000 Genomes Phase 3 reference panel
+# Obtain a biallelic-SNP-only, hg19, PLINK binary version of the 1000G
+# Phase 3 panel. The companion .psam file must contain a SuperPop column
+# with values: EUR, AFR, EAS, SAS, AMR. This can be obtained from 
+# https://www.cog-genomics.org/plink/2.0/resources#1kg_phase3
 ```
 
-### Step 3: Prepare Reference Files
-```bash
-# Download 1000 Genomes reference panel
-# Ensure HRC/TOPMed frequency file is available
-# Verify script paths point to correct R and Perl scripts
+---
+
+## Design notes
+
+### Why reference-only PCA?
+
+Computing PCA on the 1000G reference and projecting study samples keeps
+the PC axes stable regardless of study size, population composition, or
+the presence of related individuals. Related pairs would otherwise deflate
+PC variance and distort ancestry clusters.
+
+### Why SCORE_AVG needs rescaling
+
+PLINK2 `--score` with `variance-standardize` outputs `SCORE_AVG =
+SCORE_SUM / ALLELE_CT`, where `ALLELE_CT = 2 × (non-missing variants)`.
+Because `SCORE_SUM` scales with the singular value of the genotype matrix
+for each PC, the per-PC conversion is:
+
+```
+eigenvec_k = SCORE_AVG_k × 2 / sqrt(eigenvalue_k)
 ```
 
-### Step 4: Run Workflow with Cromwell
-```bash
-java -jar ~/apps/cromwell-92.jar run \
-  src/genotype_qc_preimputation.wdl \
-  -i config/genotype_qc_preimputation_inputs.json
-```
+The `M_scored / M_pca` missingness factor cancels exactly in the division
+by `ALLELE_CT`, so the formula is correct for any genotyping coverage.
 
-### Step 5: Collect Results
-```bash
-# After workflow completes:
-./src/collect_cromwell_results.bash
-# Results will be in results/ directory
-```
+### Ancestry-aware filtering strategy
 
-## Output Files
+| Filter | Applied to | Why |
+|--------|-----------|-----|
+| MAC | Full cohort | Rarity is a global property |
+| HWE | Detected within `test_populations`, removed from full cohort | Avoids false violations from stratification in admixed samples |
+| Heterozygosity | Detected and removed within `test_populations` only | Preserves samples from untested populations |
+| Relatedness | Flagged on full cohort | User decides which samples to exclude |
 
-### QC Dataset
-- **final_bed/bim/fam**: Final QC'd dataset ready for imputation
-- **final.vcf.gz**: Final dataset in VCF format (bgzipped)
-
-### QC Reports
-- **threshold_plot.png**: SNP and sample retention across thresholds
-- **mac_plot.png**: Allele frequency distribution before/after filtering
-- **ancestry_assignments.tsv**: Per-sample superpopulation assignments
-- **relatedness_flagged_samples.txt**: Samples flagged as related (for user decision)
-- **sex_check_report**: Sex consistency report
-- **heterozygosity plots and outlier list**
-
-### Imputation-Ready VCFs
-- **per-chromosome VCFs**: `chr{1-23}.vcf.gz` (ready for imputation server)
-
-## Important Notes
-
-### Ancestry-Aware Filtering Strategy
-- **MAC filter**: Full cohort (rarity is global property)
-- **HWE filter**: Detected on ancestry subset, removed from full cohort
-  - Rationale: Avoids false HWE violations in admixed samples
-- **Heterozygosity filter**: Detected on ancestry subset, removed from subset only
-  - Rationale: Preserves samples from untested populations
-- **Relatedness**: Detected on full cohort, samples flagged (not removed)
-  - Rationale: User controls removal decisions in downstream analysis
-
-### Handling Related Samples
-The pipeline **flags** related samples but does NOT automatically remove them. To use the relatedness information:
-
-1. View flagged samples in `relatedness_flagged_samples.txt`
-2. Decide which pairs to break based on your study design
-3. Use PLINK's `--remove` flag in association tests
-
-### Using Ancestry Assignments Downstream
-After QC, use the ancestry assignments file to:
-1. Filter samples in PLINK association tests: `plink --keep ancestry_assignments.tsv --filter-cases`
-2. Perform ancestry-stratified analyses
-3. Adjust for ancestry in statistical models
-
-## Troubleshooting
-
-### Empty Ancestry Keep-List
-**Error**: "No samples found for populations: EUR"
-**Cause**: Population names in config don't match 1000G assignments
-**Fix**: Check `ancestry_assignments.tsv` for correct population labels; edit config
-
-### Missing X Chromosome
-**Info**: Sex check step is skipped
-**Cause**: Input data has no X chromosome SNPs
-**Fix**: This is normal; proceed with analysis (sex check optional)
-
-### Relatedness Check Takes Too Long
-**Cause**: KING kinship computation is expensive on large datasets
-**Solution**: Consider increasing `pihat_min` threshold or running on subset
+---
 
 ## References
 
-- PLINK 1.9: https://www.cog-genomics.org/plink/1.9/
-- PLINK 2.0: https://www.cog-genomics.org/plink/2.0/
-- KING relatedness: https://www.kingrelatedness.com/
-- Will Rayner's HRC-1000G-check-bim: http://www.well.ox.ac.uk/~wrayner/
-- 1000 Genomes Project: https://www.internationalgenome.org/
+- Anderson CA et al. (2010) *Nat Protoc* 5:1564–1573. doi:10.1038/nprot.2010.116
+- Chang CC et al. (2015) *GigaScience* 4:7. doi:10.1186/s13742-015-0047-8 (PLINK)
+- Manichaikul A et al. (2010) *Bioinformatics* 26:2867–2873. doi:10.1093/bioinformatics/btq559 (KING)
+- The 1000 Genomes Project Consortium (2015) *Nature* 526:68–74. doi:10.1038/nature15393
+- Marees AT et al. (2018) *Int J Methods Psychiatr Res* 27:e1608. doi:10.1002/mpr.1608
