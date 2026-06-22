@@ -7,41 +7,58 @@ version 1.0
 ## PURPOSE
 ##   Performs standard pre-imputation QC on PLINK-format genotype data,
 ##   following the Anderson et al. (2010) protocol. Produces a clean binary
-##   PLINK dataset suitable for association testing and imputation.
+##   PLINK dataset and per-chromosome VCFs ready for imputation servers
+##   (HRC, TOPMed).
 ##
 ## PIPELINE STEPS (in order)
 ##   0.  [Optional] Convert text ped/map → binary bed/bim/fam
-##   0b. Remove duplicate sample IDs
+##   0b. Handle duplicate sample IDs (suffix-based deduplication)
 ##   1.  SNP missingness filter        (--geno)
 ##   2.  Sample missingness filter     (--mind)
-##   2b. Report variants per chromosome
+##   2b. Report variants per chromosome (informational)
+##   —   Threshold sweep visualisation (informational plots only)
 ##   3.  Sex check & removal of fails  (skipped if no X-chromosome SNPs;
-##       samples with unknown sex (sex = 0) are retained)
-##   4.  Ancestry PCA against 1000 Genomes
+##       samples with sex code 0 are retained as "unknown")
+##   4.  Ancestry PCA against 1000 Genomes (reference-only PCA + projection)
+##         a. SNPs overlapping study and reference are identified by rsID
+##            and positional concordance (guards against build mismatches).
+##         b. Optionally restrict reference to a subset of superpopulations
+##            via pca_reference_populations.
+##         c. PCA is computed on the reference panel only; variant weights
+##            (biallelic-var-wts) are saved and used to project ALL study
+##            samples (including related) into the reference PC space.
+##         d. A random forest classifier trained on the reference eigenvec
+##            assigns each study sample a superpopulation label and
+##            confidence probability. Samples below ancestry_prob_threshold
+##            are marked "unassigned".
 ##   5.  MAC filter & monomorphic SNP removal (full cohort)
-##   6.  Hardy-Weinberg equilibrium filter (subset detection, full cohort removal)
-##   7a. LD pruning (helper for heterozygosity detection only)
-##   7b. Heterozygosity outlier removal (subset detection, subset removal)
-##   8.  Chromosome filter (configurable via chr_args, e.g. "--chr 1-22")
-##   9.  Relatedness filtering (KING - samples flagged, not removed)
-##   10. Prepare for imputation (TOPMed/HRC)
+##   6.  HWE filter (detection on test_populations subset, removal from full cohort)
+##   7a. LD pruning (helper for heterozygosity check only)
+##   7b. Heterozygosity outlier removal (detection and removal within subset)
+##   8.  Chromosome filter (configurable via chr_args) — FINAL QC DATASET
+##   9.  Relatedness check (KING kinship; samples flagged, not removed)
+##   10. Prepare for imputation (HRC-1000G-check-bim.pl; per-chr VCFs)
+##
+## KEY DESIGN DECISIONS
+##   • Reference-only PCA: PC axes are defined by 1000G structure alone,
+##     so they are stable regardless of study size or relatedness.
+##   • MAC: applied to full cohort (rarity is a global property).
+##   • HWE: detected within test_populations, removed from full cohort
+##     (prevents false violations in admixed samples).
+##   • Heterozygosity: detected and removed within subset only (preserves
+##     samples from untested populations).
+##   • Relatedness: flagged on full cohort; user decides which pairs to break.
 ##
 ## CHROMOSOME ENCODING
-##   Uses PLINK2 chromosome encoding throughout:
-##     Autosomes:  1–22
-##     X:          23
-##     Y:          24
-##     PAR (XY):   25
-##     MT:         26
+##   Uses PLINK chromosome encoding throughout:
+##     Autosomes 1–22 | X = 23 | Y = 24 | PAR (XY) = 25 | MT = 26
 ##
 ## EXECUTION
-##   miniwdl run genotype_qc_preimputation.wdl -i inputs.json  # requires Docker
-##   cromwell run genotype_qc_preimputation.wdl --inputs inputs.json
+##   java -jar cromwell-92.jar run src/genotype_qc_preimputation.wdl \
+##        -i config/genotype_qc_preimputation_inputs.json
 ##
 ## DEPENDENCIES (must be on $PATH or supplied via *_bin inputs)
-##   plink  >= 1.9
-##   plink2 >= 2.0
-##   Rscript >= 4.0
+##   plink 1.9, plink2 2.0, Rscript ≥ 4.0, perl, bcftools, bgzip, tabix
 ##
 ## REFERENCE
 ##   Anderson CA et al. (2010) Nat Protoc 5:1564–1573
@@ -89,7 +106,7 @@ workflow genotype_qc_preimputation {
         Int    mac_threshold   # Min minor allele count to retain a SNP (e.g. 50)
         Float ld_r2           # Max r² for LD pruning                (e.g. 0.2)
         Int   ld_window_kb    # Sliding window size in kb            (e.g. 50)
-        Int   ld_step         # Window step size in SNPs             (e.g. 5)
+        Int   ld_step         # Window step size in SNPs             (e.g. 1)
         Float pihat_min       # Min pi-hat to flag related pairs     (e.g. 0.2)
         Float king_cutoff     # KING kinship coefficient cutoff      (e.g. 0.0884 ≈ 3rd degree)
 
@@ -98,6 +115,7 @@ workflow genotype_qc_preimputation {
 
         # -- PCA ----------------------------------------------------------------
         Int    n_pcs     # Number of principal components to compute
+        Float  ancestry_prob_threshold = 0.5  # Probability threshold for ancestry assignment (0.0-1.0)
 
         # -- 1000 Genomes ancestry PCA --------------------------------------
         # Pre-processed 1000G Phase 3 (hg19) reference panel in PLINK binary
@@ -129,7 +147,7 @@ workflow genotype_qc_preimputation {
 
     }
 
-    String pipeline_version = "2.0"
+    String pipeline_version = "0.2.0"
 
     # -- Step 0: Convert text format to binary (skipped if bed/bim/fam provided) --
     # PLINK binary format is faster for all downstream steps.
@@ -345,7 +363,8 @@ workflow genotype_qc_preimputation {
             ld_window_kb        = ld_window_kb,
             ld_step             = ld_step,
             ld_r2               = ld_r2,
-            n_pcs                      = n_pcs,
+            n_pcs               = n_pcs,
+            ancestry_prob_threshold    = ancestry_prob_threshold,
             output_prefix              = output_prefix + "_ancestry_pca",
             pca_reference_populations  = pca_reference_populations,
             plink_bin                  = plink_bin,
@@ -1439,6 +1458,7 @@ task AncestryPCA {
         Int    ld_step              # Step size in SNPs
         Float  ld_r2                # r² pruning threshold
         Int    n_pcs
+        Float  ancestry_prob_threshold # ancestry assignment probability threshold
         String output_prefix
         String pca_reference_populations  # "ALL" or comma-separated e.g. "EUR,AFR,EAS,SAS,AMR"
         String plink_bin
@@ -1558,7 +1578,8 @@ task AncestryPCA {
             ~{ref_psam} \
             ~{n_pcs} \
             ~{output_prefix} \
-            ~{output_prefix}.eigenval
+            ~{output_prefix}.eigenval \
+            ~{ancestry_prob_threshold}
 
         # Write pipeline log lines: SNP filter chain then ancestry assignment counts
         printf "%-42s  rsID: %d  concordant: %d  LD-pruned: %d\n" \
