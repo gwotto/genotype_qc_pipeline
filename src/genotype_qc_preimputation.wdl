@@ -69,6 +69,8 @@ version 1.0
 
 workflow genotype_qc_preimputation {
 
+     String pipeline_version = "v2026-06.1"
+
     input {
         # -- Input genotype files -------------------------------------------
         # Provide EITHER binary format (bed + bim + fam)
@@ -146,8 +148,6 @@ workflow genotype_qc_preimputation {
         String tabix_bin   # tabix binary
 
     }
-
-    String pipeline_version = "0.2.0"
 
     # -- Step 0: Convert text format to binary (skipped if bed/bim/fam provided) --
     # PLINK binary format is faster for all downstream steps.
