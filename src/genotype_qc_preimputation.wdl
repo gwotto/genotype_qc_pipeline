@@ -567,7 +567,7 @@ workflow genotype_qc_preimputation {
     }
 
     # -- Step 10: Prepare for TOPMed imputation ----------------------------
-    # Aligns strand orientation to the TOPMed reference panel using Will
+    # Aligns strand orientation to the HRC reference panel using Will
     # Rayner's check-bim script. Removes SNPs not in the reference, ambiguous
     # A/T and C/G SNPs that cannot be strand-resolved, and SNPs with large
     # allele frequency differences vs the reference.
