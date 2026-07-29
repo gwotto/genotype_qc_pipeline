@@ -66,7 +66,8 @@ bash src/collect_cromwell_results.bash <cromwell-run-uuid-dir> ./results
 
 Outputs land in `results/qc_dataset/` (final PLINK files),
 `results/vcfs/` (imputation-ready per-chromosome VCFs),
-`results/pca/` (ancestry assignments and PCA plots), and
+`results/pca/` (ancestry assignments and PCA plots), 
+`results/subset/` (subset of unrelated EUR samples), and
 `results/reports/` (sex check, het outliers, relatedness flags, log).
 
 ---
@@ -80,13 +81,16 @@ Outputs land in `results/qc_dataset/` (final PLINK files),
 | 1 | SNP missingness filter (`--geno`) |
 | 2 | Sample missingness filter (`--mind`) |
 | 3 | Sex check (X-chr heterozygosity) |
-| 4 | Ancestry PCA: reference-only PCA on 1000G → project all study samples → random forest ancestry assignment |
+| 4 | Ancestry PCA: reference-only PCA on 1000G -> project all study samples -> random forest ancestry assignment |
 | 5 | MAC filter and monomorphic SNP removal (full cohort) |
 | 6 | HWE filter (detected within ancestry subset, removed from full cohort) |
 | 7 | LD pruning + heterozygosity outlier removal (within ancestry subset) |
-| 8 | Chromosome filter — **final QC dataset** |
+| 8 | Restrict to selected chromosomes |
 | 9 | Relatedness check (KING; samples flagged, not removed) |
 | 10 | Harmonise with HRC/TOPMed; produce per-chromosome VCFs |
+| 11 | BED and PLINK 2 copy of the combined dataset |
+| 12 | Within-cohort covariate PCA on the combined dataset |
+| 13 | Unrelated single-ancestry subset |
 
 ---
 
@@ -94,10 +98,12 @@ Outputs land in `results/qc_dataset/` (final PLINK files),
 
 | File | Description |
 |------|-------------|
-| `results/qc_dataset/*.bed/bim/fam` | Final QC'd genotype data |
+| `results/qc_dataset/` | Final QC'd genotype data in bed and Plink 2 format |
+| `results/reports/*_sample_qc_status.tsv` | reference for filtering e.g. on ancestry and relatednes |
+| `results/pca/*_covariate_pca_covariates.tsv` | Plink format PCA covariates of the QC'ed dataset |
+| `results/subset/` | Final QC'd genotype data, subset of unrelated EUR samples | 
+| `results/subset/*_unrelated_EUR_pca_covariates.tsv`| PCA covariates for subset of unrelated EUR samples |
 | `results/vcfs/chr*.vcf.gz` | Per-chromosome VCFs for imputation servers |
-| `results/pca/ancestry_assignments.tsv` | Per-sample superpopulation and confidence probability |
-| `results/reports/relatedness_flagged_samples.txt` | Related pairs (user decides which to remove) |
 
 ---
 

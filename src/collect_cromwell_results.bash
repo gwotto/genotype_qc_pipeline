@@ -14,11 +14,15 @@
 #
 # Output structure:
 #   <output_dir>/genotype_qc_preimputation_YYYY-MM-DD/
-#     qc_dataset/   Final QC'd PLINK files (bed/bim/fam)
+#     qc_dataset/   Combined imputation-ready dataset: PLINK 1 (bed/bim/fam)
+#                   and PLINK 2 (pgen/pvar/psam)
 #     plots/        PNG plots (MAC, heterozygosity, PCA)
-#     reports/      QC reports (sex check, het, relatedness, freq, logs, ancestry)
-#     pca/          PCA eigenvectors and eigenvalues
+#     reports/      QC reports (sex check, het, relatedness, freq, logs,
+#                   ancestry, sample QC status table)
+#     pca/          Ancestry + covariate PCA eigenvectors/eigenvalues, PC covariates
 #     vcfs/         Imputation-ready VCFs per chromosome
+#     subset/       Unrelated single-ancestry subset: PLINK 1 (bed/bim/fam),
+#                   PLINK 2 (pgen/pvar/psam), within-subset PC covariates
 #
 # Example:
 #   bash collect_cromwell_results.sh /data/cromwell-executions/myworkflow/3f2a1b4c-... ./results
@@ -49,7 +53,7 @@ BASE="$cromwell_run"
 
 # -- Create output subdirectories ----------------------------------------------
 OUTDIR="$output_dir"
-mkdir -p "$OUTDIR"/{qc_dataset,plots,reports,vcfs,pca}
+mkdir -p "$OUTDIR"/{qc_dataset,plots,reports,vcfs,pca,subset}
 echo "Staging results in     : $OUTDIR"
 
 # -- Pipeline log (WriteLog) ---------------------------------------------------
@@ -57,10 +61,18 @@ echo "Copying pipeline log..."
 CALL="$BASE/call-WriteLog/execution"
 cp "$CALL"/*_pipeline.log "$OUTDIR/"
 
-# -- Final QC dataset (ChromosomeFilter; relatedness samples flagged but NOT removed) --
-echo "Copying final QC dataset (PLINK bed/bim/fam)..."
-CALL="$BASE/call-ChromosomeFilter/execution"
-cp "$CALL"/*.bed "$CALL"/*.bim "$CALL"/*.fam "$OUTDIR/qc_dataset/"
+# -- Final imputation-ready dataset (combined across chromosomes) -------------
+# The combined bed/bim/fam produced by PrepareForImputation is the PLINK
+# equivalent of the per-chromosome imputation VCFs (post strand-fix, post
+# HRC-panel filtering). Relatedness samples are flagged but NOT removed.
+echo "Copying combined imputation-ready dataset (PLINK 1 bed/bim/fam)..."
+CALL="$BASE/call-PrepareForImputation/execution"
+cp "$CALL"/*_combined.bed "$CALL"/*_combined.bim "$CALL"/*_combined.fam "$OUTDIR/qc_dataset/"
+
+# -- Same dataset in PLINK 2 format (pgen/pvar/psam) --------------------------
+echo "Copying combined imputation-ready dataset (PLINK 2 pgen/pvar/psam)..."
+CALL="$BASE/call-CombinedToPlink2/execution"
+cp "$CALL"/*.pgen "$CALL"/*.pvar "$CALL"/*.psam "$OUTDIR/qc_dataset/"
 
 # -- Threshold sweep plot (shows SNP/sample retention across thresholds) --------
 echo "Copying threshold sweep plot..."
@@ -97,9 +109,9 @@ cp "$CALL"/*.het "$OUTDIR/reports/"
 cp "$CALL"/*.png "$OUTDIR/plots/" 2>/dev/null || true
 cp "$CALL"/het_fail_ind.txt "$OUTDIR/reports/het_fail_samples.txt" 2>/dev/null || true
 
-# -- Relatedness report (step 3c - PrePCARelatednessCheck; run before PCA) ----
+# -- Relatedness report (step 9 - RelatednessCheck; on the final QC dataset) --
 echo "Copying relatedness reports (if present)..."
-CALL="$BASE/call-PrePCARelatednessCheck/execution"
+CALL="$BASE/call-RelatednessCheck/execution"
 if [ -d "$CALL" ]; then
     cp "$CALL"/*.genome "$OUTDIR/reports/" 2>/dev/null || true
     cp "$CALL"/*.king.cutoff.out.id "$OUTDIR/reports/relatedness_flagged_samples.txt" 2>/dev/null || true
@@ -122,7 +134,23 @@ if [ -d "$CALL" ]; then
     done
 fi
 
-# -- Sample QC status table
+# -- Within-cohort covariate PCs (step 12 - CovariatePCA) ---------------------
+# PC1..PCn covariates for association testing: axes estimated on unrelated
+# samples and projected onto all samples.
+echo "Copying covariate PCs..."
+CALL="$BASE/call-CovariatePCA/execution"
+if [ -d "$CALL" ]; then
+    # _covariates.tsv holds PC1..PCn for ALL samples (the deliverable).
+    # .eigenvec is skipped: redundant with _covariates.tsv (unrelated subset
+    # only). .eigenval is kept — variance explained per PC (scree / how many
+    # PCs to use as covariates).
+    cp "$CALL"/*_covariates.tsv "$OUTDIR/pca/" 2>/dev/null || true
+    cp "$CALL"/*.eigenval "$OUTDIR/pca/" 2>/dev/null || true
+fi
+
+# -- Sample QC status table (ancestry / relatedness / demographics + PCs) -----
+# One row per participant: FID, IID, ancestry, ancestry_prob, related, PC1..PCn.
+# Use this to subset the cohort and pull covariates from a single file.
 echo "Copying sample QC status table..."
 CALL="$BASE/call-CreateQCStatusTable/execution"
 if [ -d "$CALL" ]; then
@@ -130,15 +158,34 @@ if [ -d "$CALL" ]; then
 fi
 
 
-# -- Imputation VCFs (step 11 - PrepareForImputation) -------------------------
+# -- Unrelated single-ancestry subset (step 13) ------------------------------
+# PLINK 1 (bed/bim/fam) + PLINK 2 (pgen/pvar/psam) genotypes and within-subset
+# covariate PCs.
+echo "Copying unrelated-ancestry subset (PLINK 1 + PLINK 2)..."
+CALL="$BASE/call-SubsetUnrelated/execution"
+if [ -d "$CALL" ]; then
+    cp "$CALL"/*_keep.txt "$OUTDIR/subset/" 2>/dev/null || true
+    cp "$CALL"/*.bed "$CALL"/*.bim "$CALL"/*.fam "$OUTDIR/subset/" 2>/dev/null || true
+fi
+CALL="$BASE/call-SubsetToPlink2/execution"
+if [ -d "$CALL" ]; then
+    cp "$CALL"/*.pgen "$CALL"/*.pvar "$CALL"/*.psam "$OUTDIR/subset/" 2>/dev/null || true
+fi
+CALL="$BASE/call-SubsetCovariatePCA/execution"
+if [ -d "$CALL" ]; then
+    cp "$CALL"/*_covariates.tsv "$OUTDIR/subset/" 2>/dev/null || true
+    cp "$CALL"/*.eigenval       "$OUTDIR/subset/" 2>/dev/null || true
+fi
+
+# -- Imputation VCFs (step 10 - PrepareForImputation) -------------------------
 echo "Copying imputation VCFs..."
 CALL="$BASE/call-PrepareForImputation/execution"
 cp "$CALL"/*_chr*.vcf.gz     "$OUTDIR/vcfs/"
 cp "$CALL"/*_chr*.vcf.gz.tbi "$OUTDIR/vcfs/"
 cp "$CALL"/check-bim.log     "$OUTDIR/reports/"
 
-# -- Final variants-per-chromosome report (step 10b - FinalVariantsPerChromosome) --
-CALL="$BASE/call-FinalVariantsPerChromosome/execution"
+# -- Variants-per-chromosome report (post-imputation prep; matches the VCFs) --
+CALL="$BASE/call-PostImputationVariantsPerChromosome/execution"
 [ -d "$CALL" ] && cp "$CALL"/variants_per_chr_report.txt "$OUTDIR/reports/final_variants_per_chr.txt" 2>/dev/null || true
 
 # -- Rename output directory with date ----------------------------------------
@@ -153,4 +200,5 @@ ls "$output_dir"/qc_dataset/ \
    "$output_dir"/plots/ \
    "$output_dir"/reports/ \
    "$output_dir"/pca/ \
-   "$output_dir"/vcfs/
+   "$output_dir"/vcfs/ \
+   "$output_dir"/subset/

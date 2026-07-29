@@ -1,32 +1,109 @@
-graph TD
-    A["Input PLINK binary"] --> B["Convert to binary\n(optional)"]
-    B --> C["Remove duplicate IDs"]
-    C --> D["SNP missingness filter\n--geno"]
-    D --> E["Sample missingness filter\n--mind"]
-    E --> E2["Variants per chromosome\nreport"]
-    E2 --> F{"Sex check\nchr 23 (X) SNPs present?"}
-    F -->|Yes| G["Sex check & removal\n--check-sex\nsex=0 retained"]
-    F -->|No| SKIP["Skip sex check"]
-    G --> I["MAC filter\n--mac\nmonomorphic SNPs removed"]
-    SKIP --> I
-    I --> J["HWE filter\n--hwe"]
-    J --> K["LD pruning\n--indep-pairwise"]
-    K --> PRUNE["LD-pruned SNP list"]
-    J --> HET["Heterozygosity check\nuses LD-pruned SNPs"]
-    PRUNE --> HET
-    HET --> HETRM["Remove heterozygosity outliers"]
-    HETRM --> CHR["Chromosome filter\nconfigurable via chr_args"]
-    CHR --> REL["Relatedness filter (KING)\nuses LD-pruned SNPs\n(optional)"]
-    PRUNE --> REL
-    CHR --> PCA["PCA\nuses LD-pruned SNPs\ndiagnostic only"]
-    PRUNE --> PCA
-    REL --> VPC["Variants per chromosome\nreport"]
-    VPC --> PREP["Prepare for imputation\nper-chromosome VCFs"]
+flowchart TD
+    %% Flowchart of src/genotype_qc_preimputation.wdl
+    %% Node labels give the WDL task name (with its call alias where they differ).
+    %% Regenerate the PNG with:
+    %%   mmdc -i src/genotype_qc_preimputation.mmd -o doc/genotype_qc_preimputation_mm.png -s 2
+    %% Every filtering step also emits a count line, and the report tasks emit
+    %% per-chromosome tables; WriteLog concatenates them all into the pipeline
+    %% log. Those edges are omitted here to keep the data flow readable.
 
-    style A fill:#e1f5ff
-    style PREP fill:#e1f5ff
-    style PRUNE fill:#f3e5f5
-    style PCA fill:#fff9c4
-    style HET fill:#fff9c4
-    style E2 fill:#fff9c4
-    style VPC fill:#fff9c4
+    %% ================= Input =================
+    PED["ped / map input"]
+    BED["bed / bim / fam input"]
+    PED --> CONV["Step 0 ConvertToBinary<br/>ped/map to bed/bim/fam<br/>only if bed_file is not given"]
+    CONV --> DUP
+    BED --> DUP
+
+    %% ================= Basic QC (steps 0b-2) =================
+    DUP["Step 0b HandleDuplicates<br/>make duplicate sample IDs unique"]
+    DUP --> GENO["Step 1 GenoFilter<br/>SNP missingness --geno"]
+    GENO --> MIND["Step 2 MindFilter<br/>sample missingness --mind"]
+    DUP --> SWEEP["ThresholdSweep<br/>geno/mind retention sweep<br/>informational only"]
+    MIND --> VPC1["Step 2b InitialVariantsPerChromosome<br/>report only"]
+
+    %% ================= Sex check (step 3, conditional) =================
+    MIND --> XSNP["CountXSNPs<br/>count X-chromosome SNPs"]
+    XSNP --> SEXQ{"has_x_snps<br/>X-chromosome SNPs present?"}
+    SEXQ -->|Yes| SEX["Step 3 SexCheck<br/>--check-sex, reported vs genotypic sex<br/>status other than OK flagged"]
+    SEX --> SEXRM["RemoveSamples as RemoveSexFails<br/>drop discordant samples"]
+    MIND --> SEX
+    MIND --> SEXRM
+    SEXRM --> D3["Post-sex-check dataset<br/>QC3, or QC2 if the sex check was skipped"]
+    SEXQ -->|"No, sex check skipped"| D3
+
+    %% ================= Ancestry (step 4) =================
+    D3 --> PCA1["Step 4 AncestryPCA<br/>PCA on the LD-pruned 1000G reference alone,<br/>ALL study samples projected on with --score<br/>assigns EUR/AFR/EAS/SAS/AMR"]
+    REF1KG["1000G reference panel<br/>bed/bim/fam + psam with SuperPop"] --> PCA1
+    PCA1 --> ANC["Ancestry assignments<br/>label + probability per sample"]
+
+    %% ================= Variant filters (steps 5-6) =================
+    D3 --> MAC["Step 5 MacFilter<br/>--mac on the FULL cohort<br/>monomorphic SNPs removed"]
+
+    ANC --> KEEP["MakeAncestryKeepList<br/>samples in test_populations"]
+    MAC --> KEEP
+    MAC --> SUBHWE["SubsetAncestry_HWE<br/>--keep ancestry subset"]
+    KEEP --> SUBHWE
+    SUBHWE --> HWE["Step 6 HweFilterSubset<br/>--hwe within the ancestry subset"]
+    SUBHWE --> HWEDIFF["HweRemoved<br/>SNPs lost in the subset"]
+    HWE --> HWEDIFF
+    HWEDIFF --> RMHWE["RemoveVariantsAfterHWE<br/>--exclude those SNPs from the FULL cohort, QC6"]
+    MAC --> RMHWE
+
+    %% ================= Heterozygosity (step 7) =================
+    RMHWE --> PRUNE2["Step 7a LdPruning as LdPruningHet<br/>--indep-pairwise, high-LD regions excluded<br/>helper for the het and relatedness checks only<br/>LD SNPs are NOT removed from the dataset"]
+    PRUNE2 --> PRUNEIN2["LD-pruned SNP list<br/>prune.in"]
+    RMHWE --> SUBHET["SubsetAncestry_HET<br/>--keep ancestry subset"]
+    KEEP --> SUBHET
+    SUBHET --> HET["Step 7b HeterozygosityCheck<br/>F-statistic on LD-pruned SNPs<br/>outliers beyond 3 SD, within subset only"]
+    PRUNEIN2 --> HET
+    HET --> HETRM["RemoveHetFailsFromSubset<br/>drop outliers from the subset"]
+    SUBHET --> HETRM
+    HETRM --> MERGEKEEP["MergeHetKeepLists<br/>het-passing subset plus untested populations"]
+    RMHWE --> MERGEKEEP
+    KEEP --> MERGEKEEP
+    MERGEKEEP --> MERGEHET["MergeHetFiltered<br/>--keep merged list, QC7"]
+    RMHWE --> MERGEHET
+
+    %% ================= Final QC dataset (step 8) =================
+    MERGEHET --> CHR["Step 8 ChromosomeFilter<br/>configurable via chr_args<br/>FINAL QC DATASET, QC8"]
+
+    %% ================= Relatedness (step 9) =================
+    CHR --> REL["Step 9 RelatednessCheck<br/>KING kinship on the QC'd variant set, cutoff king_cutoff<br/>related samples FLAGGED, never removed"]
+    PRUNEIN2 --> REL
+    REL --> RELLIST["Related-sample list<br/>king_cutoff_out"]
+
+    %% ================= Imputation prep and deliverables (steps 10-13) =================
+    CHR --> PREP["Step 10 PrepareForImputation<br/>HRC-1000G-check-bim.pl strand/ref-alt harmonisation<br/>writes per-chromosome files, then merges them"]
+    HRC["HRC reference site frequencies"] --> PREP
+    PREP --> VCF["Per-chromosome VCFs<br/>chr*.vcf.gz + .tbi, imputation-ready"]
+    PREP --> COMB["Combined harmonised dataset<br/>bed/bim/fam across all chromosomes"]
+
+    COMB --> VPC2["Step 10a PostImputationVariantsPerChromosome<br/>report only"]
+    COMB --> P2["Step 11 ConvertToPlink2 as CombinedToPlink2<br/>pgen/pvar/psam"]
+
+    COMB --> COV["Step 12 CovariatePCA<br/>axes on unrelated samples, ALL samples projected<br/>n_covariate_pcs PCs"]
+    RELLIST --> COV
+    COV --> COVOUT["Covariate PCs<br/>FID IID PC1..PCn"]
+
+    ANC --> TABLE["CreateQCStatusTable<br/>FID, IID, ancestry, ancestry_prob, related, PC1..PCn"]
+    RELLIST --> TABLE
+    COVOUT --> TABLE
+
+    COMB --> SUB["Step 13 SubsetUnrelatedPopulation<br/>subset_population samples that are NOT KING-flagged<br/>bed/bim/fam"]
+    ANC --> SUB
+    RELLIST --> SUB
+    SUB --> SUBP2["ConvertToPlink2 as SubsetToPlink2<br/>pgen/pvar/psam"]
+    SUB --> SUBCOV["CovariatePCA as SubsetCovariatePCA<br/>PCs recomputed WITHIN the subset"]
+
+    %% ================= Styling =================
+    classDef input fill:#e1f5ff,stroke:#0277bd,color:#000
+    classDef report fill:#fff9c4,stroke:#f9a825,color:#000
+    classDef helper fill:#f3e5f5,stroke:#7b1fa2,color:#000
+    classDef deliver fill:#e8f5e9,stroke:#2e7d32,color:#000
+    classDef final fill:#ffe0b2,stroke:#e65100,stroke-width:3px,color:#000
+
+    class PED,BED,REF1KG,HRC input
+    class SWEEP,VPC1,VPC2,XSNP report
+    class PRUNEIN2,KEEP,HWEDIFF,MERGEKEEP,RELLIST,ANC,D3 helper
+    class VCF,COMB,P2,COVOUT,TABLE,SUB,SUBP2,SUBCOV deliver
+    class CHR final

@@ -116,8 +116,20 @@ workflow genotype_qc_preimputation {
         String chr_args  # PLINK chromosome filter args (e.g. "--chr 1-22" or "--autosome")
 
         # -- PCA ----------------------------------------------------------------
+        ## PCA to assign ancestry
         Int    n_pcs     # Number of principal components to compute
         Float  ancestry_prob_threshold = 0.5  # Probability threshold for ancestry assignment (0.0-1.0)
+
+        # Number of within-cohort principal components emitted as association
+        # covariates for the final (imputation-prepared) dataset. Computed on
+        # unrelated samples and projected onto all samples.
+        Int    n_covariate_pcs
+
+        # Additional deliverable: an unrelated single-ancestry subset of the
+        # imputation-ready dataset, exported in PLINK 1 and PLINK 2 formats with
+        # its own within-subset covariate PCs. Superpopulation label to select
+        # (must match AncestryPCA labels: EUR/AFR/EAS/SAS/AMR).
+        String subset_population
 
         # -- 1000 Genomes ancestry PCA --------------------------------------
         # Pre-processed 1000G Phase 3 (hg19) reference panel in PLINK binary
@@ -132,12 +144,12 @@ workflow genotype_qc_preimputation {
         # -- Ancestry subset selection --------------------------------------
         # Comma-separated list of superpopulations to run variant/sample
         # detection on (e.g. "EUR,AFR"). Use "ALL" to run on entire cohort.
-        String test_populations = "ALL"
+        String test_populations
 
         # Comma-separated list of 1000G superpopulations to include in the
         # ancestry PCA reference panel (e.g. "EUR,AFR,EAS,SAS,AMR").
         # Use "ALL" to include all 2504 phase-3 samples.
-        String pca_reference_populations = "ALL"
+        String pca_reference_populations
 
         # -- Imputation preparation ----------------------------------------------
         File   check_bim_pl  # Will Rayner's HRC-1000G-check-bim.pl script
@@ -300,56 +312,14 @@ workflow genotype_qc_preimputation {
         "Step 3   Sex check                            [skipped - no X SNPs]"
     ])
 
-    # -- Step 3b: LD pruning (for pre-PCA relatedness check) --------------
-    call LdPruning as LdPruningPreRelatedness {
-        input:
-            bed_file      = select_first([RemoveSexFails.out_bed, MindFilter.out_bed]),
-            bim_file      = select_first([RemoveSexFails.out_bim, MindFilter.out_bim]),
-            fam_file      = select_first([RemoveSexFails.out_fam, MindFilter.out_fam]),
-            ld_regions    = ld_regions,
-            ld_window_kb  = ld_window_kb,
-            ld_step       = ld_step,
-            ld_r2         = ld_r2,
-            output_prefix = output_prefix + "_indepSNP_prerelatedness",
-            label         = "Step 3b  LD pruning (pre-relatedness)",
-            plink_bin     = plink_bin
-    }
-
-    # -- Step 3c: Relatedness check (preliminary, before PCA) ---------------
-    # Related samples are identified and flagged — they are NOT removed from
-    # the main dataset. They are excluded from the PCA computation so that
-    # closely related pairs do not distort the principal components. All
-    # samples (including related) receive ancestry assignments via PLINK2
-    # projection inside AncestryPCA.
-    call RelatednessCheck as PrePCARelatednessCheck {
-        input:
-            bed_file      = select_first([RemoveSexFails.out_bed, MindFilter.out_bed]),
-            bim_file      = select_first([RemoveSexFails.out_bim, MindFilter.out_bim]),
-            fam_file      = select_first([RemoveSexFails.out_fam, MindFilter.out_fam]),
-            prune_in      = LdPruningPreRelatedness.prune_in,
-            pihat_min     = pihat_min,
-            king_cutoff   = king_cutoff,
-            output_prefix = output_prefix + "_prerelatedness",
-            plink_bin     = plink_bin,
-            plink2_bin    = plink2_bin
-    }
-
-    call CountBimFam as LogPrePCARelatedness {
-        input:
-            bim_file = select_first([RemoveSexFails.out_bim, MindFilter.out_bim]),
-            fam_file = select_first([RemoveSexFails.out_fam, MindFilter.out_fam]),
-            label    = "Step 3c  Pre-PCA relatedness check      (related flagged, excl. from PCA only)"
-    }
-
-    String pre_pca_relatedness_log_line = LogPrePCARelatedness.line
-
     # -- Step 4: Ancestry PCA against 1000 Genomes -----------------------
-    # Merges the post-sex-check UNRELATED study data with the 1000G Phase 3
-    # reference panel and computes PCA jointly. Related samples are excluded
-    # from the merged dataset so they do not distort the PCs, then projected
-    # back using PLINK2 variant weights so all samples receive ancestry labels.
-    # LD pruning is performed on the merged dataset so that independence is
-    # assessed jointly across study and reference populations.
+    # Principal components are computed on the LD-pruned 1000G Phase 3
+    # reference panel alone (saving PLINK2 variant weights), then ALL study
+    # samples are projected onto those reference axes with --score. Because the
+    # study cohort never enters the eigendecomposition, related study samples
+    # cannot distort the PCs — so no relatedness filtering is needed here (the
+    # relatedness check runs later, at step 9, on the QC'd variant set).
+    # Only autosomal SNPs shared by study and reference are used.
     call AncestryPCA {
         input:
             bed_file            = select_first([RemoveSexFails.out_bed, MindFilter.out_bed]),
@@ -453,7 +423,9 @@ workflow genotype_qc_preimputation {
             label    = "Step 6   HWE filter (subset detection)"
     }
 
-    # --- Step 7a: LD pruning only as helper for heterozygosity (do not remove LD SNPs)
+    # --- Step 7a: LD pruning as a helper for the heterozygosity (step 7b) and
+    # relatedness (step 9) checks only — the LD SNPs are NOT removed from the
+    # dataset. High-LD regions are excluded, which suits both uses.
 
     call LdPruning as LdPruningHet {
         input:
@@ -465,11 +437,11 @@ workflow genotype_qc_preimputation {
             ld_step       = ld_step,
             ld_r2         = ld_r2,
             output_prefix = output_prefix + "_indepSNP_het",
-            label         = "Step 7a  LD pruning (heterozygosity)",
+            label         = "Step 7a  LD pruning (heterozygosity + relatedness)",
             plink_bin     = plink_bin
     }
 
-    # --- Step 7: Heterozygosity filter (subset detection, subset removal) ---
+    # --- Step 7b: Heterozygosity filter (subset detection, subset removal) ---
     # Detect heterozygosity outliers only in user-defined subpopulation(s). Different 
     # and admixed ancestries could have heterozygosity rates that might count as 
     # outlyers in the selected population, but should not be removed.
@@ -532,7 +504,7 @@ workflow genotype_qc_preimputation {
         input:
             bim_file = MergeHetFiltered.out_bim,
             fam_file = MergeHetFiltered.out_fam,
-            label    = "Step 7   Heterozygosity filter (subset detection, subset removal)"
+            label    = "Step 7b  Heterozygosity filter (subset detection, subset removal)"
     }
 
     # -- Step 8: Restrict to selected chromosomes -------------------------------------
@@ -556,14 +528,32 @@ workflow genotype_qc_preimputation {
             label    = "Step 8   Chromosome filter"
     }
 
-    # -- Create comprehensive QC status table (before imputation prep) ---
-    call CreateQCStatusTable {
+    # -- Step 9: Relatedness check -----------------------------------------
+    # KING kinship on the final QC dataset, so that kinship is estimated from
+    # MAC- and HWE-filtered variants rather than the raw call set. Reuses the
+    # LD-pruned SNP list from step 7a (high-LD regions already excluded);
+    # --extract simply intersects it with the variants remaining in QC8.
+    # Related samples are FLAGGED, never removed — users apply --remove in
+    # downstream association tests. The flags feed steps 12 and 13 and the
+    # sample QC status table.
+    call RelatednessCheck {
         input:
-            ancestry_assignments = AncestryPCA.assignments,
-            relatedness_flagged = PrePCARelatednessCheck.king_cutoff_out,
-            output_prefix = output_prefix,
-            rscript_bin = rscript_bin,
-            create_qc_table_r = create_qc_table_r
+            bed_file      = ChromosomeFilter.out_bed,
+            bim_file      = ChromosomeFilter.out_bim,
+            fam_file      = ChromosomeFilter.out_fam,
+            prune_in      = LdPruningHet.prune_in,
+            pihat_min     = pihat_min,
+            king_cutoff   = king_cutoff,
+            output_prefix = output_prefix + "_relatedness",
+            plink_bin     = plink_bin,
+            plink2_bin    = plink2_bin
+    }
+
+    call CountBimFam as LogStep9 {
+        input:
+            bim_file = ChromosomeFilter.out_bim,
+            fam_file = ChromosomeFilter.out_fam,
+            label    = "Step 9   Relatedness check              (related flagged, not removed)"
     }
 
     # -- Step 10: Prepare for TOPMed imputation ----------------------------
@@ -574,13 +564,6 @@ workflow genotype_qc_preimputation {
     # Outputs per-chromosome VCF files ready for upload to the TOPMed
     # imputation server (https://imputation.biodatacatalyst.nhlbi.nih.gov).
     
-    # Report final per-chromosome variant counts before imputation prep
-    call VariantsPerChromosome as FinalVariantsPerChromosome {
-        input:
-            bim_file = ChromosomeFilter.out_bim,
-            label    = "Step 10a Variants per chromosome (pre-imputation)"
-    }
-
     call PrepareForImputation {
         input:
             bed_file        = ChromosomeFilter.out_bed,
@@ -596,6 +579,108 @@ workflow genotype_qc_preimputation {
             tabix_bin       = tabix_bin
     }
 
+    # Report per-chromosome variant counts AFTER imputation prep (check-bim),
+    # i.e. on the harmonised variant set actually written to the VCFs.
+    call VariantsPerChromosome as PostImputationVariantsPerChromosome {
+        input:
+            bim_file = PrepareForImputation.combined_bim,
+            label    = "Step 10a Variants per chromosome (harmonised)"
+    }
+
+    # -- Step 11: PLINK 2 (pgen/pvar/psam) copy of the combined dataset ----
+    call ConvertToPlink2 as CombinedToPlink2 {
+        input:
+            bed_file      = PrepareForImputation.combined_bed,
+            bim_file      = PrepareForImputation.combined_bim,
+            fam_file      = PrepareForImputation.combined_fam,
+            output_prefix = output_prefix + "_imputation_combined",
+            label         = "Step 11  PLINK 2 conversion (combined)",
+            plink2_bin    = plink2_bin
+    }
+
+    # -- Step 12: Within-cohort covariate PCA on the combined dataset ------
+    # PCs are computed on unrelated samples (KING-flagged relatives excluded)
+    # and projected onto all samples, giving association covariates for the
+    # whole cohort on a common scale.
+    call CovariatePCA {
+        input:
+            bed_file      = PrepareForImputation.combined_bed,
+            bim_file      = PrepareForImputation.combined_bim,
+            fam_file      = PrepareForImputation.combined_fam,
+            related_list  = RelatednessCheck.king_cutoff_out,
+            ld_regions    = ld_regions,
+            ld_window_kb  = ld_window_kb,
+            ld_step       = ld_step,
+            ld_r2         = ld_r2,
+            n_pcs         = n_covariate_pcs,
+            output_prefix = output_prefix + "_covariate_pca",
+            plink_bin     = plink_bin,
+            plink2_bin    = plink2_bin
+    }
+
+    # -- Create comprehensive QC status table ------------------------------
+    # Combines ancestry, relatedness, and the covariate PCs into one per-sample
+    # table so users can subset the cohort (by ancestry / relatedness) and pull
+    # covariates from a single file.
+    call CreateQCStatusTable {
+        input:
+            ancestry_assignments = AncestryPCA.assignments,
+            relatedness_flagged  = RelatednessCheck.king_cutoff_out,
+            pca_covariates       = CovariatePCA.covariates,
+            output_prefix        = output_prefix,
+            rscript_bin          = rscript_bin,
+            create_qc_table_r    = create_qc_table_r
+    }
+
+    # -- Step 13: Unrelated single-ancestry subset ---
+    # Select samples assigned to `subset_population` that are NOT KING-flagged
+    # as related, emit bed/bim/fam (in SubsetUnrelated) plus a PLINK 2 copy, and
+    # compute covariate PCs *within* the subset (correct for within-population
+    # association; the whole-cohort PCs mostly capture between-ancestry structure).
+    call SubsetUnrelatedPopulation as SubsetUnrelated {
+        input:
+            bed_file      = PrepareForImputation.combined_bed,
+            bim_file      = PrepareForImputation.combined_bim,
+            fam_file      = PrepareForImputation.combined_fam,
+            assignments   = AncestryPCA.assignments,
+            related_list  = RelatednessCheck.king_cutoff_out,
+            population    = subset_population,
+            output_prefix = output_prefix + "_unrelated_" + subset_population,
+            plink2_bin    = plink2_bin
+    }
+
+    call ConvertToPlink2 as SubsetToPlink2 {
+        input:
+            bed_file      = SubsetUnrelated.out_bed,
+            bim_file      = SubsetUnrelated.out_bim,
+            fam_file      = SubsetUnrelated.out_fam,
+            output_prefix = output_prefix + "_unrelated_" + subset_population,
+            plink2_bin    = plink2_bin
+    }
+
+    call CovariatePCA as SubsetCovariatePCA {
+        input:
+            bed_file      = SubsetUnrelated.out_bed,
+            bim_file      = SubsetUnrelated.out_bim,
+            fam_file      = SubsetUnrelated.out_fam,
+            related_list  = RelatednessCheck.king_cutoff_out,
+            ld_regions    = ld_regions,
+            ld_window_kb  = ld_window_kb,
+            ld_step       = ld_step,
+            ld_r2         = ld_r2,
+            n_pcs         = n_covariate_pcs,
+            output_prefix = output_prefix + "_unrelated_" + subset_population + "_pca",
+            plink_bin     = plink_bin,
+            plink2_bin    = plink2_bin
+    }
+
+    call CountBimFam as LogSubset {
+        input:
+            bim_file = SubsetUnrelated.out_bim,
+            fam_file = SubsetUnrelated.out_fam,
+            label    = "Step 13  Unrelated " + subset_population + " subset"
+    }
+
 
     # -- Pipeline log ------------------------------------------------------
     # Collect per-step SNP/sample counts into a single human-readable log.
@@ -609,19 +694,21 @@ workflow genotype_qc_preimputation {
         InitialVariantsPerChromosome.log_lines,
         [
             sex_check_log_line,
-            LdPruningPreRelatedness.log_line,
-            pre_pca_relatedness_log_line,
             AncestryPCA.log_line,
             LogStep5.line,
             LogStep6.line,
             LdPruningHet.log_line,
             LogStep7.line,
             LogStep8.line,
-            FinalVariantsPerChromosome.log_line
+            LogStep9.line,
+            PrepareForImputation.log_line,
+            PostImputationVariantsPerChromosome.log_line
         ],
-        FinalVariantsPerChromosome.log_lines,
+        PostImputationVariantsPerChromosome.log_lines,
         [
-            PrepareForImputation.log_line
+            CombinedToPlink2.log_line,
+            CovariatePCA.log_line,
+            LogSubset.line
         ]
     ])
 
@@ -656,14 +743,14 @@ workflow genotype_qc_preimputation {
         File maf_freq_before = MacFilter.freq_before
         File maf_freq_after  = MacFilter.freq_after
 
-        # Relatedness outputs (from pre-PCA check; samples flagged but not removed)
-        File pihat_genome       = PrePCARelatednessCheck.pihat_genome    # All pairs above pihat_min
-        File king_cutoff_out_id = PrePCARelatednessCheck.king_cutoff_out # Flagged related samples
-        File king_cutoff_in_id  = PrePCARelatednessCheck.king_cutoff_in  # Unrelated samples (for downstream use)
+        # Relatedness outputs (step 9, on the final QC dataset; flagged not removed)
+        File pihat_genome       = RelatednessCheck.pihat_genome    # All pairs above pihat_min
+        File king_cutoff_out_id = RelatednessCheck.king_cutoff_out # Flagged related samples
+        File king_cutoff_in_id  = RelatednessCheck.king_cutoff_in  # Unrelated samples (for downstream use)
 
         # LD-pruned SNP lists
         File pca_prune_in = AncestryPCA.prune_in   # LD-pruned reference SNPs used for ancestry PCA
-        File prune_in     = LdPruningHet.prune_in  # used for heterozygosity check
+        File prune_in     = LdPruningHet.prune_in  # used for heterozygosity + relatedness checks
         File prune_out    = LdPruningHet.prune_out
 
         # Threshold sweep plot — shows SNP/sample retention across filtering thresholds
@@ -677,14 +764,39 @@ workflow genotype_qc_preimputation {
         File ancestry_pca_plot         = AncestryPCA.pca_plot        # Study samples overlaid on 1000G
         File ancestry_assignments      = AncestryPCA.assignments     # Per-sample superpopulation assignments
 
-        # Per-chromosome variant counts (diagnostic — validates chromosome coding)
-        File variants_per_chr_final = FinalVariantsPerChromosome.report
+        # Per-chromosome variant counts (post check-bim — matches the VCFs)
+        File variants_per_chr_postprep = PostImputationVariantsPerChromosome.report
 
         # Imputation-ready VCFs — upload these to the TOPMed server
         Array[File] imputation_vcfs     = PrepareForImputation.vcf_gz
         Array[File] imputation_vcf_tbis = PrepareForImputation.vcf_tbi
         File        check_bim_log       = PrepareForImputation.check_bim_log
 
+        # Combined (all-chromosome) imputation-ready dataset — PLINK equivalent
+        # of the per-chromosome VCFs, in both PLINK 1 and PLINK 2 formats
+        File combined_bed  = PrepareForImputation.combined_bed
+        File combined_bim  = PrepareForImputation.combined_bim
+        File combined_fam  = PrepareForImputation.combined_fam
+        File combined_pgen = CombinedToPlink2.out_pgen
+        File combined_pvar = CombinedToPlink2.out_pvar
+        File combined_psam = CombinedToPlink2.out_psam
+
+        # Within-cohort covariate PCA (unrelated axes, all samples projected)
+        File covariate_pcs      = CovariatePCA.covariates    # FID IID PC1..PCn
+        File covariate_eigenvec = CovariatePCA.eigenvec
+        File covariate_eigenval = CovariatePCA.eigenval
+
+        # Unrelated single-ancestry subset (subset_population, default EUR):
+        # PLINK 1 (bed/bim/fam) + PLINK 2 (pgen/pvar/psam) and within-subset covariate PCs
+        File subset_keep       = SubsetUnrelated.keep_list      # FID IID of the subset
+        File subset_bed        = SubsetUnrelated.out_bed
+        File subset_bim        = SubsetUnrelated.out_bim
+        File subset_fam        = SubsetUnrelated.out_fam
+        File subset_pgen       = SubsetToPlink2.out_pgen
+        File subset_pvar       = SubsetToPlink2.out_pvar
+        File subset_psam       = SubsetToPlink2.out_psam
+        File subset_covariates = SubsetCovariatePCA.covariates  # FID IID PC1..PCn (within-subset)
+        File subset_eigenval   = SubsetCovariatePCA.eigenval
     }
 }
 
@@ -1623,17 +1735,19 @@ task CreateQCStatusTable {
     input {
         File ancestry_assignments      # From AncestryPCA.assignments
         File relatedness_flagged       # From RelatednessCheck.king_cutoff_out
+        File? pca_covariates           # From CovariatePCA.covariates (FID IID PC1..PCn)
         String output_prefix
         String rscript_bin
         File create_qc_table_r
     }
-        
+
     command <<<
         set -euo pipefail
         ~{rscript_bin} ~{create_qc_table_r} \
             ~{ancestry_assignments} \
             ~{relatedness_flagged} \
-            ~{output_prefix}
+            ~{output_prefix} \
+            ~{default="NA" pca_covariates}
     >>>
         
     output {
@@ -1771,12 +1885,30 @@ task PrepareForImputation {
 
         done
 
+        # Step 5: merge the per-chromosome harmonized filesets back into a
+        # single dataset spanning all chromosomes. This carries exactly the
+        # variant set written to the per-chromosome imputation VCFs (post
+        # strand-fix, post HRC-panel filtering), so the combined bed/bim/fam
+        # is the PLINK-format equivalent of the uploaded VCFs.
+        ls *-updated-chr*.bed 2>/dev/null | sed 's/\.bed$//' > combined_stems.txt || true
+        n_stems=$(wc -l < combined_stems.txt)
+        if [ "$n_stems" -eq 0 ]; then
+            echo "ERROR: no per-chromosome harmonized filesets found to combine" >&2
+            exit 1
+        elif [ "$n_stems" -eq 1 ]; then
+            stem=$(head -1 combined_stems.txt)
+            ~{plink_bin} --bfile "$stem" --make-bed --out ~{output_prefix}_combined
+        else
+            awk '{print $1".bed "$1".bim "$1".fam"}' combined_stems.txt > merge_list.txt
+            ~{plink_bin} --merge-list merge_list.txt --make-bed --out ~{output_prefix}_combined
+        fi
+
         # Count total SNPs retained across all per-chromosome bim files
         # and format a log line matching the CountBimFam style
         n_snps=$(cat *-updated-chr*.bim 2>/dev/null | wc -l || echo 0)
         n_samples=$(wc -l < ~{fam_file})
         printf "%-42s  SNPs: %7d   Samples: %5d\n" \
-            "Step 11  Imputation prep (check-bim)" "$n_snps" "$n_samples" \
+            "Step 10  Imputation prep (check-bim)" "$n_snps" "$n_samples" \
             > step11_log.txt
     >>>
     output {
@@ -1784,6 +1916,242 @@ task PrepareForImputation {
         Array[File] vcf_tbi       = glob("~{output_prefix}_chr*.vcf.gz.tbi")
         File        check_bim_log = "check-bim.log"
         String      log_line      = read_string("step11_log.txt")
+        # Combined (all-chromosome) harmonized dataset — PLINK equivalent of the VCFs
+        File        combined_bed  = "~{output_prefix}_combined.bed"
+        File        combined_bim  = "~{output_prefix}_combined.bim"
+        File        combined_fam  = "~{output_prefix}_combined.fam"
+    }
+    runtime { maxRetries: 1 }
+}
+
+## -----------------------------------------------------------------------------
+## ConvertToPlink2
+## Converts a PLINK 1.x binary dataset (bed/bim/fam) to PLINK 2 format
+## (pgen/pvar/psam). Used to emit the combined imputation-ready dataset in
+## PLINK 2 format alongside the PLINK 1 bed/bim/fam.
+## -----------------------------------------------------------------------------
+task ConvertToPlink2 {
+    input {
+        File   bed_file
+        File   bim_file
+        File   fam_file
+        String output_prefix
+        String label = "PLINK 2 conversion"   # Label for the pipeline log line
+        String plink2_bin
+    }
+    command <<<
+        set -euo pipefail
+        ~{plink2_bin} \
+            --bed ~{bed_file} \
+            --bim ~{bim_file} \
+            --fam ~{fam_file} \
+            --make-pgen \
+            --out ~{output_prefix}
+
+        # pvar/psam carry ## and #CHROM header lines, so skip them when counting.
+        n_snps=$(awk '!/^#/' ~{output_prefix}.pvar | wc -l)
+        n_samples=$(awk '!/^#/' ~{output_prefix}.psam | wc -l)
+        printf "%-42s  SNPs: %7d   Samples: %5d\n" \
+            "~{label}" "$n_snps" "$n_samples" > log_line.txt
+    >>>
+    output {
+        File   out_pgen = "~{output_prefix}.pgen"
+        File   out_pvar = "~{output_prefix}.pvar"
+        File   out_psam = "~{output_prefix}.psam"
+        File   log      = "~{output_prefix}.log"
+        String log_line = read_string("log_line.txt")
+    }
+    runtime { maxRetries: 1 }
+}
+
+## -----------------------------------------------------------------------------
+## SubsetUnrelatedPopulation
+## Builds a keep-list of samples assigned to a given superpopulation that are
+## NOT flagged as related (KING), then extracts that subset from a PLINK binary
+## dataset. Sample IDs are unique (guaranteed by HandleDuplicates), so related
+## individuals are excluded by IID.
+##   assignments  : AncestryPCA TSV (FID IID superpop probability ...)
+##   related_list : KING .id file of related samples (header lines start with #)
+## -----------------------------------------------------------------------------
+task SubsetUnrelatedPopulation {
+    input {
+        File   bed_file
+        File   bim_file
+        File   fam_file
+        File   assignments
+        File   related_list
+        String population       # superpopulation label, e.g. "EUR"
+        String output_prefix
+        String plink2_bin
+    }
+    command <<<
+        set -euo pipefail
+        POP="~{population}"
+
+        # IIDs assigned to the requested superpopulation.
+        awk -F'\t' -v pop="$POP" '
+            NR==1 { for (i=1;i<=NF;i++) h[$i]=i;
+                    c    = ("superpop" in h) ? h["superpop"] : \
+                           (("predicted_pop" in h) ? h["predicted_pop"] : h["predicted"]);
+                    iidc = ("IID" in h) ? h["IID"] : 2; next }
+            $c == pop { print $iidc }' ~{assignments} > pop_iids.txt
+
+        # Related IIDs to exclude (skip header lines; IID is the last column).
+        grep -v '^#' ~{related_list} 2>/dev/null | awk '{print $NF}' > related_iids.txt || true
+
+        # Unrelated population IIDs = population IIDs minus related IIDs.
+        awk 'NR==FNR{rel[$1]=1; next} !($1 in rel){print $1}' \
+            related_iids.txt pop_iids.txt > keep_iids.txt
+
+        # Resolve FID/IID from the genotype .fam.
+        awk 'NR==FNR{keep[$1]=1; next} ($2 in keep){print $1, $2}' \
+            keep_iids.txt ~{fam_file} > ~{output_prefix}_keep.txt
+
+        n=$(wc -l < ~{output_prefix}_keep.txt)
+        if [ "$n" -eq 0 ]; then
+            echo "ERROR: no unrelated $POP samples found (check ancestry labels / relatedness)" >&2
+            exit 1
+        fi
+        echo "Unrelated $POP samples retained: $n"
+
+        ~{plink2_bin} \
+            --bed ~{bed_file} \
+            --bim ~{bim_file} \
+            --fam ~{fam_file} \
+            --keep ~{output_prefix}_keep.txt \
+            --make-bed \
+            --out ~{output_prefix}
+    >>>
+    output {
+        File out_bed   = "~{output_prefix}.bed"
+        File out_bim   = "~{output_prefix}.bim"
+        File out_fam   = "~{output_prefix}.fam"
+        File keep_list = "~{output_prefix}_keep.txt"
+        File log       = "~{output_prefix}.log"
+    }
+    runtime { maxRetries: 1 }
+}
+
+## -----------------------------------------------------------------------------
+## CovariatePCA
+## Computes within-cohort principal components on the final (imputation-prepared)
+## dataset for use as association-analysis covariates.
+##
+## Design:
+##   • PC axes are estimated on LD-pruned autosomal SNPs using UNRELATED samples
+##     only (related individuals — flagged by the KING check — are removed so
+##     they do not distort the axes). Variant weights are saved.
+##   • ALL samples (related included) are then projected onto those axes, so
+##     every participant receives covariates on a common scale.
+##
+## This differs from AncestryPCA: those PCs are projected onto 1000 Genomes to
+## infer ancestry, whereas these are within-cohort PCs capturing residual
+## structure to adjust for in association testing.
+##
+## Outputs:
+##   eigenvec    — PC scores of the unrelated samples used to define the axes
+##   eigenval    — eigenvalues (variance explained)
+##   covariates  — FID IID PC1..PCn for ALL samples (plink2 --covar compatible)
+## -----------------------------------------------------------------------------
+task CovariatePCA {
+    input {
+        File   bed_file
+        File   bim_file
+        File   fam_file
+        File   related_list    # Samples to exclude from axis estimation (KING flagged)
+        File   ld_regions      # High-LD regions to exclude during pruning
+        Int    ld_window_kb
+        Int    ld_step
+        Float  ld_r2
+        Int    n_pcs
+        String output_prefix
+        String plink_bin
+        String plink2_bin
+    }
+    command <<<
+        set -euo pipefail
+
+        # (1) LD prune autosomal SNPs, excluding high-LD regions.
+        ~{plink_bin} \
+            --bed ~{bed_file} \
+            --bim ~{bim_file} \
+            --fam ~{fam_file} \
+            --chr 1-22 \
+            --exclude ~{ld_regions} --range \
+            --indep-pairwise ~{ld_window_kb} kb ~{ld_step} ~{ld_r2} \
+            --out cov_prune
+
+        # (2) Decide whether any related samples need removing from axis estimation.
+        # The KING .id file carries a header (lines starting with '#'); count the
+        # data rows to know whether --remove is needed.
+        n_related=$(grep -vc '^#' ~{related_list} || true)
+        if [ "${n_related:-0}" -gt 0 ]; then
+            REMOVE_ARG="--remove ~{related_list}"
+        else
+            REMOVE_ARG=""
+        fi
+
+        # (3) Reference allele frequencies from the unrelated samples, used both
+        # for the PCA and to standardise the projection consistently.
+        ~{plink2_bin} \
+            --bed ~{bed_file} \
+            --bim ~{bim_file} \
+            --fam ~{fam_file} \
+            ${REMOVE_ARG} \
+            --extract cov_prune.prune.in \
+            --freq \
+            --out cov_ref_freq
+
+        # (4) PCA on the unrelated samples; save variant weights for projection.
+        ~{plink2_bin} \
+            --bed ~{bed_file} \
+            --bim ~{bim_file} \
+            --fam ~{fam_file} \
+            ${REMOVE_ARG} \
+            --extract cov_prune.prune.in \
+            --read-freq cov_ref_freq.afreq \
+            --pca ~{n_pcs} biallelic-var-wts \
+            --out ~{output_prefix}
+
+        # (5) Project ALL samples (related included) onto the unrelated axes.
+        # eigenvec.var: col 2 = variant ID, col 4 = scored allele, cols 5.. = PCs.
+        score_end=$(( ~{n_pcs} + 4 ))
+        ~{plink2_bin} \
+            --bed ~{bed_file} \
+            --bim ~{bim_file} \
+            --fam ~{fam_file} \
+            --extract cov_prune.prune.in \
+            --read-freq cov_ref_freq.afreq \
+            --score ~{output_prefix}.eigenvec.var 2 4 header no-mean-imputation variance-standardize \
+            --score-col-nums 5-${score_end} \
+            --out ~{output_prefix}_projected
+
+        # (6) Build the covariate table: FID, IID, PC1..PCn for all samples.
+        # The projected .sscore ends with the n PC score columns; take the first
+        # two columns (FID, IID) and the last n columns.
+        awk -v n=~{n_pcs} '
+            NR==1 {
+                printf "FID\tIID";
+                for (i=1;i<=n;i++) printf "\tPC%d", i;
+                printf "\n";
+                next
+            }
+            {
+                printf "%s\t%s", $1, $2;
+                for (i=NF-n+1; i<=NF; i++) printf "\t%s", $i;
+                printf "\n"
+            }' ~{output_prefix}_projected.sscore > ~{output_prefix}_covariates.tsv
+
+        n_prune=$(wc -l < cov_prune.prune.in)
+        printf "%-42s  %d PCs on %d LD-pruned SNPs (unrelated), projected to all\n" \
+            "Step 12  Covariate PCA" "~{n_pcs}" "$n_prune" > cov_log.txt
+    >>>
+    output {
+        File   eigenvec     = "~{output_prefix}.eigenvec"
+        File   eigenval     = "~{output_prefix}.eigenval"
+        File   eigenvec_var = "~{output_prefix}.eigenvec.var"
+        File   covariates   = "~{output_prefix}_covariates.tsv"
+        String log_line      = read_string("cov_log.txt")
     }
     runtime { maxRetries: 1 }
 }

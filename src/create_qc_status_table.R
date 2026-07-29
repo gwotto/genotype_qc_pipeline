@@ -10,6 +10,7 @@ args <- commandArgs(trailingOnly = TRUE)
 ancestry_file <- args[1]      # ancestry_assignments.tsv
 relatedness_file <- args[2]   # relatedness_flagged_samples.txt
 output_prefix <- args[3]      # prefix for output
+pca_file <- if (length(args) >= 4) args[4] else "NA"  # covariate PCs (FID IID PC1..PCn); "NA" = none
 
 # Load ancestry assignments
 ancestry <- read_tsv(ancestry_file) |>
@@ -36,6 +37,17 @@ qc_status <- ancestry |>
     related = ifelse(is.na(related), FALSE, related)
   ) |>
   select(FID, IID, ancestry, ancestry_prob, related)
+
+# Optionally append within-cohort covariate PCs (FID IID PC1..PCn).
+# Coerce join keys to character on both sides to avoid type-mismatch errors.
+if (!is.na(pca_file) && pca_file != "NA" && file.exists(pca_file)) {
+  pcs <- read_tsv(pca_file) |>
+    mutate(FID = as.character(FID), IID = as.character(IID))
+  qc_status <- qc_status |>
+    mutate(FID = as.character(FID), IID = as.character(IID)) |>
+    left_join(pcs, by = c("FID", "IID"))
+  cat(sprintf("Appended %d covariate PCs from: %s\n", ncol(pcs) - 2, pca_file))
+}
 
 # Print summary statistics
 cat("\n=== QC Summary ===\n")
