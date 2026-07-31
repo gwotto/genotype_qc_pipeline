@@ -70,6 +70,25 @@ Outputs land in `results/qc_dataset/` (final PLINK files),
 `results/subset/` (subset of unrelated EUR samples), and
 `results/reports/` (sex check, het outliers, relatedness flags, log).
 
+### 6. Render the QC report
+
+```bash
+quarto render src/genotype_qc_report.qmd \
+    -P results_dir=./results \
+    -P cohort="My cohort" \
+    -P config_json=config/genotype_qc_preimputation_inputs.json \
+    --output-dir ./results
+```
+
+This reads the collected results directory and writes a single self-contained
+`genotype_qc_report.html`: per-step counts, every diagnostic plot, the ancestry
+and relatedness tables, the check-bim harmonisation summary, and an inventory
+of every delivered file with a note on what it is for. Nothing is recomputed
+from the genotypes — the report only reads what the run wrote.
+
+Files a run did not produce (for example the sex check on an autosome-only
+array) are reported as absent rather than breaking the render.
+
 ---
 
 ## Pipeline summary
@@ -104,6 +123,7 @@ Outputs land in `results/qc_dataset/` (final PLINK files),
 | `results/subset/` | Final QC'd genotype data, subset of unrelated EUR samples | 
 | `results/subset/*_unrelated_EUR_pca_covariates.tsv`| PCA covariates for subset of unrelated EUR samples |
 | `results/vcfs/chr*.vcf.gz` | Per-chromosome VCFs for imputation servers |
+| `results/genotype_qc_report.html` | Rendered QC report (see step 6) |
 
 ---
 

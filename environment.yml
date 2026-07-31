@@ -17,3 +17,8 @@ dependencies:
   - bcftools>=1.17
   - htslib>=1.17       # provides bgzip and tabix
   - openjdk>=11        # required for Cromwell
+  # --- QC report (src/genotype_qc_report.qmd) ---------------------------
+  - quarto
+  - r-knitr
+  - r-rmarkdown
+  - r-jsonlite         # optional: parses the inputs JSON into the report

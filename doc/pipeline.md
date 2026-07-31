@@ -85,7 +85,7 @@ study composition.
    chr:pos coordinates (catches genome-build mismatches).
 2. If `pca_reference_populations` is not `"ALL"`, the reference panel is
    filtered to the listed superpopulations before PCA.
-3. The filtered reference is LD-pruned (same parameters as step 7a).
+3. The filtered reference is LD-pruned.
 4. PLINK2 `--pca biallelic-var-wts` computes `n_pcs` PCs on the reference
    and saves per-variant weights in `.eigenvec.var`.
 5. Reference allele frequencies are saved (`--freq`) for use in step 6.
@@ -143,8 +143,7 @@ populations not covered by `test_populations`.
 
 ### Step 8 — Chromosome filter
 
-Restricts the dataset to the chromosomes listed in `chr_args`. The output
-of this step is the **final QC dataset** used for all downstream analysis.
+Restricts the dataset to the chromosomes listed in `chr_args`.
 
 ### Step 9 — Relatedness check (KING)
 
@@ -388,6 +387,50 @@ Cromwell run directory but is not collected.
 | `pca/ancestry_assignments.tsv` | Per-sample: FID, IID, superpop, probability. Use to select ancestry strata. |
 | `reports/relatedness_flagged_samples.txt` | One member of each related pair. Pass to `plink --remove` in association tests if needed. |
 | `subset/` | Ready-made unrelated `subset_population` cohort with its own within-subset covariate PCs. |
+
+---
+
+## QC report
+
+`src/genotype_qc_report.qmd` turns a collected results directory into a single
+self-contained HTML report:
+
+```bash
+quarto render src/genotype_qc_report.qmd \
+    -P results_dir=./results/genotype_qc_preimputation_YYYY-MM-DD \
+    -P cohort="My cohort" \
+    -P config_json=config/genotype_qc_preimputation_inputs.json \
+    --output-dir ./results/genotype_qc_preimputation_YYYY-MM-DD
+```
+
+| Parameter | Meaning |
+|-----------|---------|
+| `results_dir` | The collected results directory. Relative paths are resolved from `src/` and then upwards, so `./results` works from the repository root. |
+| `cohort` | Free-text cohort name shown in the report header. Optional. |
+| `config_json` | The workflow inputs JSON, so the report can document the thresholds the run used. Optional. |
+| `prefix` | Output prefix. Auto-detected from `*_pipeline.log`; only needed if that file is absent. |
+
+The report contains, in pipeline order: headline counts; the per-step retention
+table and chart parsed from the pipeline log; the threshold sweep; per-chromosome
+variant counts before QC; the sex check status counts and the discordant
+samples; the ancestry PCA plot, assignment counts and confidence distribution;
+the MAC plot with a before/after allele-frequency summary; what HWE removed;
+the heterozygosity distribution, bounds and the samples it dropped; the final
+QC dataset size; relatedness counts, the pi-hat distribution and the closest
+pairs; the check-bim harmonisation counts; per-chromosome counts before QC
+versus after harmonisation; the VCF inventory with index check; the combined
+dataset in both PLINK formats; the covariate PC scree and PC1/PC2 by ancestry;
+the cohort composition crosstab; the unrelated subset; a "what to use for what"
+table; and an inventory of every file with its size and purpose.
+
+Everything is read from the log, the report tables and file metadata — no
+genotypes are parsed, so it renders in seconds. Files a run did not produce
+(the sex check on an autosome-only array, for instance) are reported as absent
+rather than breaking the render, and files are located by pattern rather than
+by name so any `output_prefix` works.
+
+Requires `quarto` plus the R packages in `environment.yml` (`knitr`,
+`rmarkdown`, `tidyverse`; `jsonlite` only for the `config_json` table).
 
 ---
 
