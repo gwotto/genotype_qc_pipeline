@@ -22,7 +22,7 @@ execute:
   warning: false
   message: false
 params:
-  results_dir: "results"
+  run_dir: ""
   prefix: ""
   config_json: ""
   cohort: ""
@@ -30,28 +30,33 @@ params:
 
 <!--
 =============================================================================
-genotype_qc_report.qmd
+genotype_qc_report_cromwell.qmd
 
-Renders a standalone HTML report from a genotype_qc_preimputation run that has
-been organised by src/collect_cromwell_results.bash.
+Same report as src/genotype_qc_report.qmd, but read straight out of a Cromwell
+run directory instead of a directory organised by collect_cromwell_results.bash.
+Use it to inspect a run before (or without) collecting its results.
 
 USAGE
-  quarto render src/genotype_qc_report.qmd \
-      -P results_dir=/path/to/results/genotype_qc_preimputation_YYYY-MM-DD \
+  quarto render src/genotype_qc_report_cromwell.qmd \
+      -P run_dir=/path/to/cromwell-executions/genotype_qc_preimputation/<uuid> \
       -P cohort="My cohort" \
       -P config_json=config/genotype_qc_preimputation_inputs.json \
-      --output-dir /path/to/where/the/html/should/go
+      --output-dir /absolute/path/for/the/html
 
 PARAMETERS
-  results_dir  collected results directory (required in practice; relative
-               paths are resolved from the .qmd's directory and then upwards)
+  run_dir      the workflow UUID directory holding the call-* subdirectories
   cohort       free-text cohort name shown in the header (optional)
   config_json  workflow inputs JSON, to document the thresholds (optional)
   prefix       output prefix; auto-detected from *_pipeline.log if omitted
 
-Every file is located by pattern, not by name, so the report does not need to
-know the run's prefix. Anything a run did not produce is reported as absent
-instead of breaking the render — a partial results directory still renders.
+RUN-DIRECTORY SPECIFICS
+  - `call-<Task>/attempt-N/execution` appears when a task is retried
+    (`maxRetries: 1` is set on every task); the highest attempt wins.
+  - `execution/glob-*/` holds duplicates of globbed outputs (the VCFs) and
+    `call-<Task>/inputs/` holds copies of upstream outputs. Both would
+    double-count, so listings are never recursive.
+  - The run directory also holds every intermediate dataset, each task's plink
+    log, stdout/stderr and exit code. Those are summarised in the inventory.
 =============================================================================
 -->
 
@@ -105,17 +110,12 @@ theme_report <- function() {
 theme_set(theme_report())
 
 ## ---------------------------------------------------------------------------
-## Locating result files
-##
-## Everything is discovered by pattern under the collected results directory
-## (the layout written by src/collect_cromwell_results.bash), so the report does
-## not need to know the run's output prefix. Any file a run did not produce is
-## reported as absent rather than breaking the render.
+## Locating files inside the Cromwell run directory
 ## ---------------------------------------------------------------------------
 ## Quarto renders with the working directory set to the .qmd's own directory,
 ## so a relative path given on the command line is interpreted from src/.
-## Try it as given, then walk up towards the project root.
-## A "~" reaches R unexpanded when the shell did not expand it, so do it here.
+## Try it as given, then walk up towards the project root. A "~" reaches R
+## unexpanded when the shell did not expand it, so do that here too.
 resolve_path <- function(p) {
   if (!nzchar(p)) return(p)
   p <- path.expand(p)
@@ -125,21 +125,143 @@ resolve_path <- function(p) {
   normalizePath(p, mustWork = FALSE)
 }
 
-RD <- resolve_path(params$results_dir)
-if (!dir.exists(RD)) {
-  stop("results_dir not found: ", RD, "\n",
-       "  Give an ABSOLUTE path — Quarto renders with the working directory set\n",
-       "  to the .qmd's own directory, not the one you invoked it from:\n\n",
-       "    quarto render /path/to/genotype_qc_pipeline/src/genotype_qc_report.qmd \\\n",
-       "        -P results_dir=/absolute/path/to/results/genotype_qc_preimputation_YYYY-MM-DD \\\n",
+RD <- resolve_path(params$run_dir)
+if (!nzchar(params$run_dir) || !dir.exists(RD)) {
+  stop("run_dir not found: ", RD, "\n",
+       "  Point it at the workflow UUID directory (the one holding call-* dirs)\n",
+       "  and give an ABSOLUTE path — Quarto renders with the working directory\n",
+       "  set to the .qmd's own directory, not the one you invoked it from:\n\n",
+       "    quarto render /path/to/genotype_qc_pipeline/src/genotype_qc_report_cromwell.qmd \\\n",
+       "        -P run_dir=/absolute/path/to/cromwell-executions/genotype_qc_preimputation/<uuid> \\\n",
        "        --output-dir /absolute/path/for/the/html\n")
 }
 
-picks <- function(subdir, pattern) {
-  d <- if (nzchar(subdir)) file.path(RD, subdir) else RD
-  if (!dir.exists(d)) return(character(0))
-  sort(list.files(d, pattern = pattern, full.names = TRUE))
+call_dirs <- sort(list.dirs(RD, recursive = FALSE, full.names = FALSE))
+call_dirs <- call_dirs[str_starts(call_dirs, "call-")]
+if (length(call_dirs) == 0) {
+  stop("no call-* directories under ", RD,
+       "\n  This does not look like a Cromwell run directory.")
 }
+tasks <- str_remove(call_dirs, "^call-")
+
+## A retried task gets call-<Task>/attempt-N/execution alongside the original
+## call-<Task>/execution. The last attempt is the one that produced the outputs.
+exec_dir <- function(task) {
+  base <- file.path(RD, paste0("call-", task))
+  if (!dir.exists(base)) return(NA_character_)
+  att <- list.dirs(base, recursive = FALSE, full.names = TRUE)
+  att <- att[str_detect(basename(att), "^attempt-\\d+$")]
+  if (length(att)) {
+    n <- as.integer(str_extract(basename(att), "\\d+"))
+    d <- file.path(att[which.max(n)], "execution")
+    if (dir.exists(d)) return(d)
+  }
+  d <- file.path(base, "execution")
+  if (dir.exists(d)) d else NA_character_
+}
+
+## Which task wrote each thing the report asks for. The (subdir, pattern) keys
+## are the ones used by the collected-layout report, so the body of the two
+## documents stays identical; `rt` is the name the file actually has in the run
+## directory when it differs from its collected name.
+R_ <- function(tasks, rt = NULL) list(tasks = tasks, rt = rt)
+ROUTES <- list(
+  "|_pipeline\\.log$"                            = R_("WriteLog"),
+
+  "plots|threshold_sweep\\.png$"                 = R_("ThresholdSweep"),
+  "plots|mac_plot\\.png$"                        = R_("MacFilter"),
+  "plots|heterozygosity\\.png$"                  = R_("HeterozygosityCheck"),
+  "plots|_ancestry_pca\\.png$"                   = R_("AncestryPCA"),
+
+  "reports|initial_variants_per_chr\\.txt$"      = R_("InitialVariantsPerChromosome",
+                                                      "^variants_per_chr_report\\.txt$"),
+  "reports|final_variants_per_chr\\.txt$"        = R_("PostImputationVariantsPerChromosome",
+                                                      "^variants_per_chr_report\\.txt$"),
+  "reports|_annotated\\.sexcheck$"               = R_("SexCheck"),
+  "reports|\\.sexcheck$"                         = R_("SexCheck"),
+  "reports|sex_fail_samples\\.fam$"              = R_("RemoveSexFails", "\\.fam$"),
+  "reports|^freq_before\\.frq$"                  = R_("MacFilter"),
+  "reports|^freq_after\\.frq$"                   = R_("MacFilter"),
+  "reports|\\.hwe$"                              = R_("HweFilterSubset"),
+  "reports|R_check\\.het$"                       = R_("HeterozygosityCheck"),
+  "reports|het_fail_samples\\.txt$"              = R_("HeterozygosityCheck",
+                                                      "^het_fail_ind\\.txt$"),
+  "reports|relatedness_flagged_samples\\.txt$"   = R_("RelatednessCheck",
+                                                      "king\\.cutoff\\.out\\.id$"),
+  "reports|relatedness_unrelated_samples\\.txt$" = R_("RelatednessCheck",
+                                                      "king\\.cutoff\\.in\\.id$"),
+  "reports|\\.genome$"                           = R_("RelatednessCheck"),
+  "reports|check-bim\\.log$"                     = R_("PrepareForImputation"),
+  "reports|_sample_qc_status\\.tsv$"             = R_("CreateQCStatusTable"),
+  "reports|ancestry_assignments\\.tsv$"          = R_("AncestryPCA"),
+
+  "pca|ancestry_assignments\\.tsv$"              = R_("AncestryPCA"),
+  "pca|\\.eigenval$"                             = R_(c("AncestryPCA", "CovariatePCA")),
+  "pca|_covariate_pca_covariates\\.tsv$"         = R_("CovariatePCA", "_covariates\\.tsv$"),
+  "pca|_covariates\\.tsv$"                       = R_("CovariatePCA"),
+  "pca|_covariate_pca\\.eigenval$"               = R_("CovariatePCA", "\\.eigenval$"),
+
+  ## PrepareForImputation also holds the per-chromosome *-updated-chr* filesets,
+  ## so the combined dataset has to be matched explicitly.
+  "qc_dataset|\\.bed$"                           = R_("PrepareForImputation", "_combined\\.bed$"),
+  "qc_dataset|\\.bim$"                           = R_("PrepareForImputation", "_combined\\.bim$"),
+  "qc_dataset|\\.fam$"                           = R_("PrepareForImputation", "_combined\\.fam$"),
+  "qc_dataset|\\.pgen$"                          = R_("CombinedToPlink2"),
+  "qc_dataset|\\.pvar$"                          = R_("CombinedToPlink2"),
+  "qc_dataset|\\.psam$"                          = R_("CombinedToPlink2"),
+
+  "vcfs|\\.vcf\\.gz$"                            = R_("PrepareForImputation",
+                                                      "_chr[0-9]+\\.vcf\\.gz$"),
+  "vcfs|\\.vcf\\.gz\\.tbi$"                      = R_("PrepareForImputation",
+                                                      "_chr[0-9]+\\.vcf\\.gz\\.tbi$"),
+  "vcfs|\\.tbi$"                                 = R_("PrepareForImputation",
+                                                      "_chr[0-9]+\\.vcf\\.gz\\.tbi$"),
+
+  "subset|_keep\\.txt$"                          = R_("SubsetUnrelated"),
+  "subset|\\.bed$"                               = R_("SubsetUnrelated"),
+  "subset|\\.bim$"                               = R_("SubsetUnrelated"),
+  "subset|\\.fam$"                               = R_("SubsetUnrelated"),
+  "subset|\\.pgen$"                              = R_("SubsetToPlink2"),
+  "subset|\\.pvar$"                              = R_("SubsetToPlink2"),
+  "subset|\\.psam$"                              = R_("SubsetToPlink2"),
+  "subset|_covariates\\.tsv$"                    = R_("SubsetCovariatePCA"),
+  "subset|\\.eigenval$"                          = R_("SubsetCovariatePCA")
+)
+
+## Fallback for any (subdir, pattern) not in the table: search the tasks that
+## feed that part of the collected layout.
+SUBDIR_TASKS <- list(
+  "plots"      = c("ThresholdSweep", "MacFilter", "HeterozygosityCheck", "AncestryPCA"),
+  "reports"    = c("SexCheck", "RemoveSexFails", "InitialVariantsPerChromosome",
+                   "MacFilter", "HweFilterSubset", "HeterozygosityCheck",
+                   "RelatednessCheck", "AncestryPCA", "CreateQCStatusTable",
+                   "PrepareForImputation", "PostImputationVariantsPerChromosome"),
+  "pca"        = c("AncestryPCA", "CovariatePCA"),
+  "qc_dataset" = c("PrepareForImputation", "CombinedToPlink2"),
+  "vcfs"       = "PrepareForImputation",
+  "subset"     = c("SubsetUnrelated", "SubsetToPlink2", "SubsetCovariatePCA")
+)
+
+`%||%` <- function(a, b) if (is.null(a)) b else a
+
+## Never recursive: glob-*/ duplicates the VCFs and inputs/ duplicates upstream
+## outputs, and both would be counted twice.
+picks <- function(subdir, pattern) {
+  r <- ROUTES[[paste0(subdir, "|", pattern)]]
+  if (is.null(r)) {
+    fallback <- if (!nzchar(subdir)) "WriteLog" else SUBDIR_TASKS[[subdir]] %||% tasks
+    r <- R_(fallback)
+  }
+  pat <- if (is.null(r$rt)) pattern else r$rt
+  out <- character(0)
+  for (tk in r$tasks) {
+    d <- exec_dir(tk)
+    if (is.na(d)) next
+    out <- c(out, list.files(d, pattern = pat, full.names = TRUE))
+  }
+  sort(unique(out))
+}
+
 pick <- function(subdir, pattern) {
   h <- picks(subdir, pattern)
   if (length(h) == 0) NA_character_ else h[1]
@@ -155,9 +277,9 @@ fsize  <- function(p) if (have(p)) file.info(p)$size else NA_real_
 ## Non-breaking space so "512 KB" never wraps across two table lines
 hsize <- function(b) {
   ifelse(is.na(b), "—",
-    ifelse(b >= 1024^3, sprintf("%.1f GB", b / 1024^3),
-      ifelse(b >= 1024^2, sprintf("%.1f MB", b / 1024^2),
-        ifelse(b >= 1024,   sprintf("%.0f KB", b / 1024), sprintf("%.0f B", b)))))
+    ifelse(b >= 1024^3, sprintf("%.1f GB", b / 1024^3),
+      ifelse(b >= 1024^2, sprintf("%.1f MB", b / 1024^2),
+        ifelse(b >= 1024,   sprintf("%.0f KB", b / 1024), sprintf("%.0f B", b)))))
 }
 
 ## ---------------------------------------------------------------------------
@@ -200,6 +322,21 @@ collapsible <- function(title, text) {
   cat(text, sep = "\n")
   cat("\n```\n:::\n\n")
 }
+
+## ---------------------------------------------------------------------------
+## Task exit codes. A run directory can hold a failed or half-finished run, so
+## this is checked before anything is reported as a result.
+## ---------------------------------------------------------------------------
+task_status <- tibble(task = tasks) |>
+  mutate(
+    dir = vapply(task, exec_dir, ""),
+    rc  = vapply(dir, function(d) {
+      f <- file.path(d, "rc")
+      if (!is.na(d) && file.exists(f)) str_trim(read_lines(f, progress = FALSE)[1]) else NA_character_
+    }, "")
+  )
+failed_tasks <- task_status |> filter(!is.na(rc) & rc != "0")
+unfinished   <- task_status |> filter(is.na(rc))
 
 ## ---------------------------------------------------------------------------
 ## The pipeline log — the backbone of the report
@@ -293,18 +430,33 @@ if (nzchar(params$cohort))  bits <- c(bits, paste0("**Cohort:** ", params$cohort
 if (nzchar(prefix))         bits <- c(bits, paste0("**Run:** `", prefix, "`"))
 if (!is.na(run_version))    bits <- c(bits, paste0("**pipeline version** ", run_version))
 if (!is.na(run_date))       bits <- c(bits, paste0("**run date** ", run_date))
-bits <- c(bits, paste0("**results** `", RD, "`"))
+bits <- c(bits, paste0("**Cromwell run** `", basename(RD), "`"))
 
 cat("::: {.callout-tip appearance='simple'}\n")
 cat(paste(bits, collapse = "  ·  "), "\n", sep = "")
 cat(":::\n\n")
+
+## Anything other than "every task exited 0" is stated before the results, not
+## after them — a run directory can hold a failed or still-running workflow.
+if (nrow(failed_tasks)) {
+  cat("\n::: {.callout-important}\n## This run did not complete cleanly\n\n",
+      nrow(failed_tasks), " task(s) exited non-zero: ",
+      paste(sprintf("`%s` (rc %s)", failed_tasks$task, failed_tasks$rc), collapse = ", "),
+      ".\n\nEverything below is read from whatever those tasks did write, so treat ",
+      "it as partial.\n:::\n\n", sep = "")
+} else if (nrow(unfinished)) {
+  cat("\n::: {.callout-important}\n## This run may still be in progress\n\n",
+      nrow(unfinished), " task(s) have no exit-code file: ",
+      paste(sprintf("`%s`", unfinished$task), collapse = ", "),
+      ".\n:::\n\n", sep = "")
+}
 ```
 
 This report summarises one execution of the `genotype_qc_preimputation` WDL
 workflow: what was filtered at each step, how many variants and samples
-survived, what the diagnostic plots show, and where every deliverable file
-sits in the collected results directory. Numbers are read directly from the
-run's own outputs — nothing here is recomputed from the genotypes.
+survived, what the diagnostic plots show, and which task in the Cromwell run
+directory produced each file. Numbers are read directly from the run's own
+outputs — nothing here is recomputed from the genotypes.
 
 # Headline numbers
 
@@ -328,14 +480,15 @@ if (!is.null(first_step) && !is.null(last_step)) {
   add("Samples retained",  p_fmt(last_step$samples / first_step$samples), "derived")
 }
 
-rel_out <- read_id_file(pick("reports", "relatedness_flagged_samples\\.txt$"))
+rel_out_f <- pick("reports", "relatedness_flagged_samples\\.txt$")
+rel_out <- read_id_file(rel_out_f)
 if (!is.null(rel_out)) add("Samples flagged as related (KING)", n_fmt(nrow(rel_out)),
-                           "reports/relatedness_flagged_samples.txt")
+                           rel(rel_out_f))
 
 het_fail <- pick("reports", "het_fail_samples\\.txt$")
 if (have(het_fail)) add("Heterozygosity outliers removed",
                         n_fmt(nrow(read_id_file(het_fail))),
-                        "reports/het_fail_samples.txt")
+                        rel(het_fail))
 
 if (!is.null(anc_tbl) && "superpop" %in% names(anc_tbl)) {
   top <- anc_tbl |> count(superpop, sort = TRUE)
@@ -346,7 +499,13 @@ if (!is.null(anc_tbl) && "superpop" %in% names(anc_tbl)) {
 
 vcfs <- picks("vcfs", "\\.vcf\\.gz$")
 if (length(vcfs)) add("Imputation-ready VCFs", sprintf("%d files (%s)",
-                       length(vcfs), hsize(sum(file.info(vcfs)$size))), "vcfs/")
+                       length(vcfs), hsize(sum(file.info(vcfs)$size))),
+                      "call-PrepareForImputation")
+
+add("Workflow tasks", sprintf("%d (%s)", nrow(task_status),
+                              if (nrow(failed_tasks) == 0 && nrow(unfinished) == 0)
+                                "all exited 0" else "see warning above"),
+    paste0("call-*/execution/rc"))
 
 if (length(rows)) {
   show_table(bind_rows(rows), align = c("l", "r", "l"))
@@ -368,8 +527,9 @@ threshold that was applied.
 #| fig-height: 6.5
 
 if (nrow(step_counts) == 0) {
-  absent(paste("No `*_pipeline.log` in", RD, "— the whole trajectory section",
-               "depends on it. Check that call-WriteLog completed."))
+  absent(paste("No `*_pipeline.log` under `call-WriteLog/` — the whole trajectory",
+               "section depends on it. That task runs last, so its absence usually",
+               "means the workflow did not finish."))
 } else {
   show_table(
     step_counts |>
@@ -443,8 +603,15 @@ p <- pick("plots", "threshold_sweep\\.png$")
 if (have(p)) {
   show_image(p, "Variant and sample retention across candidate --geno / --mind thresholds")
   cat("Source file: ", fref(p), "\n\n", sep = "")
+  ## Only the run directory keeps the numbers behind the plot.
+  gs <- pick("plots", "^geno_sweep\\.txt$")
+  ms <- pick("plots", "^mind_sweep\\.txt$")
+  if (have(gs) || have(ms)) {
+    cat("The underlying sweep tables are ", fref(gs), " and ", fref(ms),
+        " — these are not copied out by `collect_cromwell_results.bash`.\n\n", sep = "")
+  }
 } else {
-  absent("No `plots/threshold_sweep.png` — the `ThresholdSweep` task did not run or produced no plot.")
+  absent("No `threshold_sweep.png` under `call-ThresholdSweep/` — the task did not run or produced no plot.")
 }
 ```
 
@@ -456,7 +623,7 @@ if (have(p)) {
 
 vc_init <- read_varchr(pick("reports", "initial_variants_per_chr\\.txt$"))
 if (is.null(vc_init)) {
-  absent("No `reports/initial_variants_per_chr.txt`.")
+  absent("No `variants_per_chr_report.txt` under `call-InitialVariantsPerChromosome/`.")
 } else {
   cat("Counted on the post-missingness dataset. Source file: ",
       fref(pick("reports", "initial_variants_per_chr\\.txt$")), "\n\n", sep = "")
@@ -498,11 +665,12 @@ markers.
 ```{r sexcheck}
 #| results: asis
 
-## Two .sexcheck files can be present: PLINK's raw output and the pipeline's
+## Two .sexcheck files are written: PLINK's raw output and the pipeline's
 ## annotated copy. Prefer the annotated one.
 sx <- pick("reports", "_annotated\\.sexcheck$")
 if (!have(sx)) sx <- pick("reports", "\\.sexcheck$")
-sx_fail <- pick("reports", "sex_fail_samples\\.fam$")
+sx_prob <- pick("reports", "_problem_samples\\.txt$")
+sx_kept <- pick("reports", "sex_fail_samples\\.fam$")
 
 if (!have(sx)) {
   skipped <- any(str_detect(log_txt, regex("sex check.*skipped", ignore_case = TRUE)))
@@ -511,7 +679,7 @@ if (!have(sx)) {
                "SNPs, so no F-statistic could be computed. This is expected for",
                "autosome-only arrays and does not indicate a problem."))
   } else {
-    absent("No `reports/*.sexcheck` file was collected.")
+    absent("No `*.sexcheck` under `call-SexCheck/`.")
   }
 } else {
   ## The annotated report starts with "##" provenance lines (chromosome coding,
@@ -528,9 +696,13 @@ if (!have(sx)) {
                caption = "PLINK --check-sex status counts.")
     prob <- sxt |> filter(!str_detect(STATUS, regex("^ok$", ignore_case = TRUE)))
     if (nrow(prob)) {
-      cat("**", n_fmt(nrow(prob)), " sample(s) were discordant and removed.**\n\n", sep = "")
-      show_table(head(prob, 50))
-      if (nrow(prob) > 50) cat("_(showing the first 50 of ", nrow(prob), ")_\n\n", sep = "")
+      cat("**", n_fmt(nrow(prob)), " sample(s) were discordant and removed.**", sep = "")
+      if (have(sx_prob)) cat(" The FID/IID list the workflow acted on is ",
+                             fref(sx_prob), ".", sep = "")
+      cat("\n\n")
+      ## dont show the ids if discordant samples 
+      # show_table(head(prob, 50))
+      # if (nrow(prob) > 50) cat("_(showing the first 50 of ", nrow(prob), ")_\n\n", sep = "")
     } else {
       cat("No sex discordances were found.\n\n")
     }
@@ -538,11 +710,9 @@ if (!have(sx)) {
     show_table(head(sxt, 20), caption = "Head of the sex check report.")
   }
 
-  if (have(sx_fail)) {
-    note(paste0("`", rel(sx_fail), "` is the `.fam` of the dataset **after** the ",
-                "discordant samples were removed (", n_fmt(nlines(sx_fail)),
-                " samples retained), not a list of failures — the name given to ",
-                "it by `collect_cromwell_results.bash` is misleading."))
+  if (have(sx_kept)) {
+    cat("The dataset written by `call-RemoveSexFails` holds ", n_fmt(nlines(sx_kept)),
+        " samples: ", fref(sx_kept), ".\n\n", sep = "")
   }
 }
 ```
@@ -570,7 +740,7 @@ if (have(p)) {
   show_image(p, "Study samples projected onto 1000 Genomes principal components")
   cat("Source file: ", fref(p), "\n\n", sep = "")
 } else {
-  absent("No ancestry PCA plot in `plots/`.")
+  absent("No ancestry PCA plot under `call-AncestryPCA/`.")
 }
 ```
 
@@ -680,7 +850,7 @@ if (have(p)) {
   show_image(p, "Minor allele count distribution before and after filtering")
   cat("Source file: ", fref(p), "\n\n", sep = "")
 } else {
-  absent("No `plots/mac_plot.png`.")
+  absent("No `mac_plot.png` under `call-MacFilter/`.")
 }
 
 fb <- pick("reports", "^freq_before\\.frq$")
@@ -709,7 +879,7 @@ if (have(fb) || have(fa)) {
                                      rel(fb), ", ", rel(fa), ")."))
   }
 } else {
-  absent("No `reports/freq_before.frq` / `freq_after.frq`.")
+  absent("No `freq_before.frq` / `freq_after.frq` under `call-MacFilter/`.")
 }
 ```
 
@@ -743,16 +913,30 @@ if (length(hwe_line) && length(mac_line)) {
   absent("The pipeline log has no step 5/6 count lines to compare.")
 }
 
-hwe_files <- picks("reports", "\\.hwe$")
-if (length(hwe_files)) {
-  cat("Per-variant HWE statistics: ", paste(sprintf("`%s`", rel(hwe_files)),
-      collapse = ", "), "\n\n", sep = "")
-} else {
-  note(paste("No `.hwe` table is collected: the workflow applies `--hwe` as a",
-             "filter rather than running `--hardy`, so PLINK writes no per-variant",
-             "HWE report. The counts above are the authoritative record of what",
-             "the step removed."))
+## The run directory keeps the actual list of removed variants, which the
+## collected results do not.
+hwe_removed <- NA_character_
+d_hwe <- exec_dir("HweRemoved")
+if (!is.na(d_hwe)) {
+  hits <- list.files(d_hwe, pattern = "removed_snps\\.txt$", full.names = TRUE)
+  if (length(hits)) hwe_removed <- hits[1]
 }
+if (have(hwe_removed)) {
+  cat("The ", n_fmt(nlines(hwe_removed)), " variant IDs removed for HWE violation ",
+      "are listed in ", fref(hwe_removed), ".\n\n", sep = "")
+      # " — this list is not copied out by `collect_cromwell_results.bash`.\n\n", sep = "")
+}
+
+# hwe_files <- picks("reports", "\\.hwe$")
+# if (length(hwe_files)) {
+#   cat("Per-variant HWE statistics: ", paste(sprintf("`%s`", rel(hwe_files)),
+#       collapse = ", "), "\n\n", sep = "")
+# } else {
+#   note(paste("There is no `.hwe` table: the workflow applies `--hwe` as a",
+#              "filter rather than running `--hardy`, so PLINK writes no per-variant",
+#              "HWE report. The counts above are the authoritative record of what",
+#              "the step removed."))
+# }
 ```
 
 # Heterozygosity (steps 7a–7b)
@@ -775,7 +959,20 @@ if (have(p)) {
   show_image(p, "Heterozygosity rate distribution with the ±3 SD outlier bounds")
   cat("Source file: ", fref(p), "\n\n", sep = "")
 } else {
-  absent("No `plots/heterozygosity.png`.")
+  absent("No `heterozygosity.png` under `call-HeterozygosityCheck/`.")
+}
+
+pr <- pick("", "\\.prune\\.in$")
+if (!have(pr)) {
+  d <- exec_dir("LdPruningHet")
+  if (!is.na(d)) {
+    hits <- list.files(d, pattern = "\\.prune\\.in$", full.names = TRUE)
+    if (length(hits)) pr <- hits[1]
+  }
+}
+if (have(pr)) {
+  cat("Step 7a kept ", n_fmt(nlines(pr)), " independent SNPs: ", fref(pr),
+      ". The same list is reused by the relatedness check at step 9.\n\n", sep = "")
 }
 
 het <- pick("reports", "R_check\\.het$")
@@ -801,19 +998,20 @@ if (have(het)) {
     )
   }
 } else {
-  absent("No `reports/R_check.het`.")
+  absent("No `R_check.het` under `call-HeterozygosityCheck/`.")
 }
 
 if (have(hf)) {
   n_fail <- nrow(read_id_file(hf))
   cat("**", n_fmt(n_fail), " sample(s) failed the heterozygosity check** and were removed. ",
       "Full list: ", fref(hf), "\n\n", sep = "")
-  if (n_fail > 0 && n_fail <= 50) {
-    ff <- read_id_file(hf)
-    show_table(ff, caption = "Samples removed as heterozygosity outliers.")
-  }
+  ## don't show the list of failed samples
+  # if (n_fail > 0 && n_fail <= 50) {
+  #   ff <- read_id_file(hf)
+  #   show_table(ff, caption = "Samples removed as heterozygosity outliers.")
+  # }
 } else {
-  absent("No `reports/het_fail_samples.txt`.")
+  absent("No `het_fail_ind.txt` under `call-HeterozygosityCheck/`.")
 }
 ```
 
@@ -830,12 +1028,25 @@ l8 <- step_counts |> filter(str_detect(step, regex("^Step 8", ignore_case = TRUE
 if (nrow(l8)) {
   show_table(l8 |> select(Step = step, Variants = snps, Samples = samples),
              caption = "Final QC dataset (step 8).")
-  note(paste("The step 8 dataset stays in the Cromwell run directory and is",
-             "**not** collected into `results/`. What lands in `qc_dataset/` is the",
-             "step 10 harmonised dataset, so that the PLINK files and the",
-             "imputation VCFs describe exactly the same variants."))
 } else {
   absent("No step 8 line in the pipeline log.")
+}
+
+## Unlike the collected results, the run directory still holds this dataset.
+d8 <- exec_dir("ChromosomeFilter")
+if (!is.na(d8)) {
+  b8 <- list.files(d8, pattern = "\\.bim$", full.names = TRUE)
+  f8 <- list.files(d8, pattern = "\\.fam$", full.names = TRUE)
+  if (length(b8) && length(f8)) {
+    cat("The step 8 fileset itself is here — ", n_fmt(nlines(b8[1])), " variants × ",
+        n_fmt(nlines(f8[1])), " samples in `", rel(sub("\\.bim$", "", b8[1])),
+        ".{bed,bim,fam}`.\n\n", sep = "")
+    note(paste("`collect_cromwell_results.bash` deliberately does **not** copy this",
+               "fileset out. What it puts in `qc_dataset/` is the step 10 harmonised",
+               "dataset, so that the PLINK files and the imputation VCFs describe",
+               "exactly the same variants. Use the step 8 data only if you",
+               "specifically want the pre-harmonisation genotypes."))
+  }
 }
 ```
 
@@ -878,7 +1089,7 @@ if (have(gen)) {
 if (length(rows)) {
   show_table(bind_rows(rows), align = c("l", "r", "l"))
 } else {
-  absent("No relatedness outputs in `reports/`.")
+  absent("No relatedness outputs under `call-RelatednessCheck/`.")
 }
 ```
 
@@ -903,14 +1114,16 @@ if (!is.null(gtab) && "PI_HAT" %in% names(gtab) && nrow(gtab) > 0) {
 
 ```{r related-pairs}
 #| results: asis
+#| eval: false
 
-if (!is.null(gtab) && nrow(gtab) > 0) {
-  cols <- intersect(c("FID1", "IID1", "FID2", "IID2", "Z0", "Z1", "Z2", "PI_HAT"),
-                    names(gtab))
-  top <- gtab |> arrange(desc(.data[["PI_HAT"]])) |> head(25) |> select(all_of(cols))
-  show_table(top, caption = "The 25 most closely related pairs (full table in the .genome file).")
-  if (nrow(gtab) > 25) cat("_(", n_fmt(nrow(gtab)), " pairs in total)_\n\n", sep = "")
-}
+## dont show the table of failed samples
+# if (!is.null(gtab) && nrow(gtab) > 0) {
+#   cols <- intersect(c("FID1", "IID1", "FID2", "IID2", "Z0", "Z1", "Z2", "PI_HAT"),
+#                     names(gtab))
+#   top <- gtab |> arrange(desc(.data[["PI_HAT"]])) |> head(25) |> select(all_of(cols))
+#   show_table(top, caption = "The 25 most closely related pairs (full table in the .genome file).")
+#   if (nrow(gtab) > 25) cat("_(", n_fmt(nrow(gtab)), " pairs in total)_\n\n", sep = "")
+# }
 ```
 
 # Imputation preparation (step 10)
@@ -942,7 +1155,21 @@ if (have(cb)) {
   }
   collapsible("check-bim.log (full)", txt)
 } else {
-  absent("No `reports/check-bim.log`.")
+  absent("No `check-bim.log` under `call-PrepareForImputation/`.")
+}
+
+## The exclusion lists check-bim writes live only in the run directory.
+dpi <- exec_dir("PrepareForImputation")
+if (!is.na(dpi)) {
+  lists <- list.files(dpi, full.names = TRUE,
+                      pattern = "^(Exclude|Strand-Flip|Force-Allele1|Position|Chromosome|ID)-.*\\.txt$")
+  if (length(lists)) {
+    li <- tibble(File = basename(lists),
+                 Variants = vapply(lists, nlines, integer(1))) |> arrange(File)
+    show_table(li, caption = paste0(
+      "Per-action variant lists written by check-bim in `", rel(dpi),
+      "`. These are not copied out by `collect_cromwell_results.bash`."))
+  }
 }
 ```
 
@@ -954,7 +1181,7 @@ if (have(cb)) {
 
 vc_fin <- read_varchr(pick("reports", "final_variants_per_chr\\.txt$"))
 if (is.null(vc_fin)) {
-  absent("No `reports/final_variants_per_chr.txt`.")
+  absent("No `variants_per_chr_report.txt` under `call-PostImputationVariantsPerChromosome/`.")
 } else {
   cat("These counts match the VCFs variant-for-variant. Source file: ",
       fref(pick("reports", "final_variants_per_chr\\.txt$")), "\n\n", sep = "")
@@ -1015,7 +1242,7 @@ vcf_files <- picks("vcfs", "\\.vcf\\.gz$")
 tbi_files <- picks("vcfs", "\\.vcf\\.gz\\.tbi$")
 
 if (length(vcf_files) == 0) {
-  absent("No VCFs in `vcfs/` — the imputation deliverable is missing.")
+  absent("No VCFs under `call-PrepareForImputation/` — the imputation deliverable is missing.")
 } else {
   vi <- tibble(File = basename(vcf_files), Bytes = file.info(vcf_files)$size) |>
     mutate(chr = as.integer(str_match(File, "chr(\\d+)\\.vcf\\.gz$")[, 2]),
@@ -1024,14 +1251,18 @@ if (length(vcf_files) == 0) {
     arrange(chr) |>
     select(File, Size, `Tabix index` = Index)
   show_table(vi, caption = sprintf(
-    "Imputation-ready VCFs in `vcfs/` (%d files, %s total).",
-    length(vcf_files), hsize(sum(file.info(vcf_files)$size))))
+    "Imputation-ready VCFs in `%s` (%d files, %s total).",
+    rel(dirname(vcf_files[1])), length(vcf_files),
+    hsize(sum(file.info(vcf_files)$size))))
 
   if (any(vi$`Tabix index` == "MISSING")) {
     absent("One or more VCFs have no `.tbi` index — imputation servers will reject them.")
   } else {
-    note(paste("Upload the contents of `vcfs/` to the imputation server",
-               "(HRC or TOPMed, matching the panel the run was harmonised against)."))
+    note(paste("Upload these to the imputation server (HRC or TOPMed, matching the",
+               "panel the run was harmonised against). Run",
+               "`collect_cromwell_results.bash` to gather them into a `vcfs/`",
+               "directory first — the run directory also holds a duplicate copy of",
+               "each VCF under `execution/glob-*/`."))
   }
 }
 ```
@@ -1053,7 +1284,7 @@ pvar <- pick("qc_dataset", "\\.pvar$")
 psam <- pick("qc_dataset", "\\.psam$")
 
 if (!have(bim) && !have(pgen)) {
-  absent("Nothing in `qc_dataset/` — the combined deliverable is missing.")
+  absent("No combined dataset under `call-PrepareForImputation/` or `call-CombinedToPlink2/`.")
 } else {
   rows <- list()
   if (have(bim)) rows[[length(rows) + 1]] <-
@@ -1066,7 +1297,8 @@ if (!have(bim) && !have(pgen)) {
                         read_lines(pvar, progress = FALSE), "#"))) else "—",
            Samples = n_fmt(max(0, nlines(psam) - 1)),
            Files = paste(sprintf("`%s`", basename(c(pgen, pvar, psam))), collapse = ", "))
-  show_table(bind_rows(rows), caption = "Contents of `qc_dataset/`.")
+  show_table(bind_rows(rows), caption = paste0(
+    "The combined dataset, in `call-PrepareForImputation/` and `call-CombinedToPlink2/`."))
 }
 ```
 
@@ -1093,7 +1325,7 @@ cov_tbl <- if (have(cov_f)) suppressWarnings(read_tsv(cov_f, show_col_types = FA
                                                       progress = FALSE)) else NULL
 
 if (is.null(cov_tbl)) {
-  absent("No covariate PC file in `pca/`.")
+  absent("No covariate PC file under `call-CovariatePCA/`.")
 } else {
   npc <- length(pc_cols(cov_tbl))
   cat("**", n_fmt(nrow(cov_tbl)), " samples × ", npc, " PCs** — ", fref(cov_f),
@@ -1171,7 +1403,7 @@ covariates without touching the genotype files — for example, keep
 #| results: asis
 
 if (is.null(qc_tbl)) {
-  absent("No `reports/*_sample_qc_status.tsv`.")
+  absent("No `*_sample_qc_status.tsv` under `call-CreateQCStatusTable/`.")
 } else {
   cat("Source file: ", fref(qc_file), " — ", n_fmt(nrow(qc_tbl)), " samples, ",
       "columns: ", paste0("`", names(qc_tbl)[seq_len(min(6, ncol(qc_tbl)))], "`",
@@ -1208,16 +1440,18 @@ if (is.null(qc_tbl)) {
     show_table(ct, caption = "Cohort composition by ancestry and relatedness flag.")
   }
 
+  ## Don't show the samples
+
   ## Show the leading columns only — with 20+ PCs the full table does not fit
   ## on a page, and the point here is the shape of the file, not its contents.
-  head_cols <- intersect(c("FID", "IID", "ancestry", "ancestry_prob", "related",
-                           "PC1", "PC2", "PC3"), names(qc_tbl))
-  show_table(head(qc_tbl, 5) |> select(all_of(head_cols)) |>
-               mutate(across(where(is.numeric), \(x) round(x, 4))),
-             caption = paste0("First five rows of the sample QC status table",
-                              if (ncol(qc_tbl) > length(head_cols))
-                                sprintf(" (first %d of %d columns).",
-                                        length(head_cols), ncol(qc_tbl)) else "."))
+  # head_cols <- intersect(c("FID", "IID", "ancestry", "ancestry_prob", "related",
+  #                          "PC1", "PC2", "PC3"), names(qc_tbl))
+  # show_table(head(qc_tbl, 5) |> select(all_of(head_cols)) |>
+  #              mutate(across(where(is.numeric), \(x) round(x, 4))),
+  #            caption = paste0("First five rows of the sample QC status table",
+  #                             if (ncol(qc_tbl) > length(head_cols))
+  #                               sprintf(" (first %d of %d columns).",
+  #                                       length(head_cols), ncol(qc_tbl)) else "."))
 }
 ```
 
@@ -1247,7 +1481,7 @@ subset_pop <- if (have(s_keep)) str_match(basename(s_keep),
                   "_unrelated_([A-Za-z]+)_keep\\.txt$")[, 2] else NA_character_
 
 if (!have(s_bim) && !have(s_keep)) {
-  absent("Nothing in `subset/` — step 13 did not run or was not collected.")
+  absent("Nothing under `call-SubsetUnrelated/` — step 13 did not run.")
 } else {
   if (!is.na(subset_pop)) {
     cat("Subset population: **", subset_pop, "**, unrelated samples only.\n\n", sep = "")
@@ -1268,7 +1502,8 @@ if (!have(s_bim) && !have(s_keep)) {
              Value = sprintf("%s samples × %d PCs", n_fmt(nrow(sc)), length(pc_cols(sc))),
              File = rel(s_cov))
   }
-  show_table(bind_rows(rows), caption = "Contents of `subset/`.", align = c("l", "r", "l"))
+  show_table(bind_rows(rows), align = c("l", "r", "l"),
+             caption = "Step 13 outputs, across the three tasks that build the subset.")
 }
 ```
 
@@ -1301,98 +1536,107 @@ if (have(s_ev)) {
 #| results: asis
 
 d <- tribble(
-  ~Purpose, ~Location,
-  "Upload to the imputation server (HRC / TOPMed)", "`vcfs/*.vcf.gz` + `.tbi`",
-  "Pre-imputation analysis in PLINK 1", "`qc_dataset/*_combined.{bed,bim,fam}`",
-  "Pre-imputation analysis in PLINK 2", "`qc_dataset/*.{pgen,pvar,psam}`",
-  "Association covariates for the whole cohort", "`pca/*_covariate_pca_covariates.tsv`",
-  "Subsetting the cohort by ancestry or relatedness", "`reports/*_sample_qc_status.tsv`",
-  "Dropping relatives from an analysis", "`reports/relatedness_flagged_samples.txt` with PLINK `--remove`",
-  "A ready-made unrelated single-ancestry analysis set", "`subset/`",
-  "Per-step counts for a methods section", "the `*_pipeline.log` at the top level"
+  ~Purpose, ~`Task directory (under the run directory)`,
+  "Upload to the imputation server (HRC / TOPMed)", "`call-PrepareForImputation/execution/*_chr*.vcf.gz` + `.tbi`",
+  "Pre-imputation analysis in PLINK 1", "`call-PrepareForImputation/execution/*_combined.{bed,bim,fam}`",
+  "Pre-imputation analysis in PLINK 2", "`call-CombinedToPlink2/execution/*.{pgen,pvar,psam}`",
+  "Association covariates for the whole cohort", "`call-CovariatePCA/execution/*_covariates.tsv`",
+  "Subsetting the cohort by ancestry or relatedness", "`call-CreateQCStatusTable/execution/*_sample_qc_status.tsv`",
+  "Dropping relatives from an analysis", "`call-RelatednessCheck/execution/plink2.king.cutoff.out.id` with PLINK `--remove`",
+  "A ready-made unrelated single-ancestry analysis set", "`call-SubsetUnrelated/`, `call-SubsetToPlink2/`, `call-SubsetCovariatePCA/`",
+  "Per-step counts for a methods section", "`call-WriteLog/execution/*_pipeline.log`",
+  "The pre-harmonisation step 8 dataset", "`call-ChromosomeFilter/execution/*_QC8.{bed,bim,fam}`"
 )
 show_table(d)
 
+note(paste("Run `bash src/collect_cromwell_results.bash <run-dir> ./results` before",
+           "handing any of this on. The run directory mixes deliverables with every",
+           "intermediate dataset, duplicate copies under `execution/glob-*/` and",
+           "`inputs/`, and Cromwell's own scaffolding — it is not a distributable",
+           "result set."))
+
 note(paste("Related samples are **flagged, not removed**, everywhere except the",
            "step 13 subset. If your analysis assumes unrelated individuals, apply",
-           "`--remove reports/relatedness_flagged_samples.txt` yourself."))
+           "`--remove` with the KING cutoff list yourself."))
 ```
 
-# File inventory
+# Task inventory
+
+Every task in the run, with its exit code and what it produced. Cromwell
+scaffolding (`script`, `stdout`, `stderr`, `rc`),
+PLINK side files (`.hh`, `.nosex`, `.log`) and duplicate copies under
+`glob-*/` and `inputs/` are excluded from the file counts.
 
 ```{r inventory}
 #| results: asis
 
-all_files <- list.files(RD, recursive = TRUE, full.names = TRUE)
-if (length(all_files) == 0) {
-  absent("The results directory is empty.")
+SCAFFOLD <- paste0("^(script|script\\.submit|script\\.background|stdout|stderr|",
+                   "stdout\\.background|stderr\\.background|rc|tmp\\..*|Rplots\\.pdf)$")
+
+inv <- lapply(tasks, function(tk) {
+  d <- exec_dir(tk)
+  if (is.na(d)) return(NULL)
+  f <- list.files(d, full.names = TRUE)
+  f <- f[!dir.exists(f)]                                  # drops glob-*/ dirs
+  f <- f[!str_detect(basename(f), SCAFFOLD)]
+  ## PLINK's own .log/.hh/.nosex side files are noise in this column, but the
+  ## pipeline log and the check-bim log are real outputs.
+  side <- str_detect(basename(f), "\\.(hh|nosex)$") |
+          (str_detect(basename(f), "\\.log$") &
+           !str_detect(basename(f), "(_pipeline\\.log|check-bim\\.log)$"))
+  keep <- f[!side]
+  info <- file.info(f)
+  rcv <- task_status$rc[match(tk, task_status$task)]
+  tibble(
+    Task    = tk,
+    Exit    = ifelse(is.na(rcv), "—", rcv),
+    Files   = length(f),
+    Size    = hsize(sum(info$size, na.rm = TRUE)),
+    Outputs = if (length(keep) == 0) "" else
+      paste0(paste(basename(head(keep, 4)), collapse = ", "),
+             if (length(keep) > 4) sprintf(", … (%d more)", length(keep) - 4) else "")
+  )
+}) |> bind_rows()
+
+if (nrow(inv) == 0) {
+  absent("No task directories could be read.")
 } else {
-  describe <- function(f) {
-    b <- basename(f)
-    case_when(
-      str_detect(b, "_pipeline\\.log$")                ~ "Per-step SNP/sample counts for the whole run",
-      str_detect(b, "\\.vcf\\.gz$")                    ~ "Imputation-ready VCF (one per chromosome)",
-      str_detect(b, "\\.vcf\\.gz\\.tbi$")              ~ "Tabix index for the VCF",
-      str_detect(b, "_combined\\.(bed|bim|fam)$")      ~ "Combined harmonised dataset, PLINK 1",
-      str_detect(b, "\\.(pgen|pvar|psam)$") & str_detect(f, "/subset/") ~ "Unrelated subset, PLINK 2",
-      str_detect(b, "\\.(bed|bim|fam)$")    & str_detect(f, "/subset/") ~ "Unrelated subset, PLINK 1",
-      str_detect(b, "\\.(pgen|pvar|psam)$")            ~ "Combined harmonised dataset, PLINK 2",
-      str_detect(b, "_keep\\.txt$")                    ~ "FID/IID of the unrelated single-ancestry subset",
-      str_detect(b, "_sample_qc_status\\.tsv$")        ~ "Per-sample ancestry, relatedness flag and PCs",
-      str_detect(b, "ancestry_assignments\\.tsv$")     ~ "Assigned superpopulation and probability",
-      str_detect(b, "_ancestry_pca\\.png$")            ~ "Study samples projected on 1000G PCs",
-      str_detect(b, "threshold_sweep\\.png$")          ~ "Retention across candidate thresholds",
-      str_detect(b, "mac_plot\\.png$")                 ~ "MAC distribution before/after filtering",
-      str_detect(b, "heterozygosity\\.png$")           ~ "Heterozygosity distribution and outlier bounds",
-      str_detect(b, "relatedness_flagged_samples")     ~ "KING-flagged related samples (remove for unrelated set)",
-      str_detect(b, "relatedness_unrelated_samples")   ~ "Maximal unrelated sample set",
-      str_detect(b, "\\.genome$")                      ~ "Pairwise IBD estimates above pihat_min",
-      str_detect(b, "R_check\\.het$")                  ~ "Per-sample heterozygosity statistics",
-      str_detect(b, "het_fail_samples\\.txt$")         ~ "Heterozygosity outliers that were removed",
-      str_detect(b, "_annotated\\.sexcheck$")          ~ "X-chromosome sex check report (annotated)",
-      str_detect(b, "\\.sexcheck$")                    ~ "X-chromosome sex check report (raw PLINK output)",
-      str_detect(b, "sex_fail_samples\\.fam$")         ~ "FAM of the dataset AFTER sex-discordant samples were removed",
-      str_detect(b, "freq_before\\.frq$")              ~ "Allele frequencies before the MAC filter",
-      str_detect(b, "freq_after\\.frq$")               ~ "Allele frequencies after the MAC filter",
-      str_detect(b, "check-bim\\.log$")                ~ "HRC/TOPMed harmonisation log",
-      str_detect(b, "initial_variants_per_chr")        ~ "Variants per chromosome entering QC",
-      str_detect(b, "final_variants_per_chr")          ~ "Variants per chromosome in the VCFs",
-      str_detect(b, "_covariates\\.tsv$")              ~ "PC covariates (FID IID PC1..PCn)",
-      str_detect(b, "\\.eigenval$")                    ~ "PCA eigenvalues (variance per PC)",
-      str_detect(b, "\\.eigenvec\\.var$")              ~ "PCA variant weights (used for projection)",
-      str_detect(b, "\\.eigenvec$")                    ~ "PCA sample scores",
-      str_detect(b, "\\.sscore$")                      ~ "Study samples projected onto reference PCs",
-      str_detect(b, "prune\\.in$")                     ~ "LD-pruned SNP list",
-      str_detect(b, "\\.(bed|bim|fam)$")               ~ "PLINK 1 genotype fileset",
-      TRUE                                             ~ ""
-    )
-  }
+  total_files <- sum(inv$Files)
+  all_f <- unlist(lapply(tasks, function(tk) {
+    d <- exec_dir(tk); if (is.na(d)) return(character(0))
+    f <- list.files(d, full.names = TRUE); f[!dir.exists(f)]
+  }))
+  show_table(inv, caption = sprintf(
+    "%d tasks, %s files, %s in `%s` (excluding duplicates under glob-*/ and inputs/).",
+    nrow(inv), n_fmt(total_files),
+    hsize(sum(file.info(all_f)$size, na.rm = TRUE)), RD))
+}
+```
 
-  inv <- tibble(path = all_files) |>
-    mutate(Directory = ifelse(dirname(path) == RD, "(top level)", basename(dirname(path))),
-           File = basename(path),
-           Size = hsize(file.info(path)$size),
-           What = describe(path)) |>
-    arrange(match(Directory, c("(top level)", "qc_dataset", "vcfs", "subset",
-                               "pca", "reports", "plots")), File) |>
-    select(Directory, File, Size, What)
+```{r warnings}
+#| results: asis
 
-  ## Collapse the per-chromosome VCF rows into one line each
-  vcf_rows <- inv |> filter(str_detect(File, "\\.vcf\\.gz$"))
-  tbi_rows <- inv |> filter(str_detect(File, "\\.vcf\\.gz\\.tbi$"))
-  inv <- inv |> filter(!str_detect(File, "\\.vcf\\.gz"))
-  if (nrow(vcf_rows)) {
-    inv <- bind_rows(inv, tibble(
-      Directory = "vcfs",
-      File = sprintf("%d × *.vcf.gz (+ %d × .tbi)", nrow(vcf_rows), nrow(tbi_rows)),
-      Size = hsize(sum(file.info(c(picks("vcfs", "\\.vcf\\.gz$"),
-                                   picks("vcfs", "\\.tbi$")))$size)),
-      What = "Imputation-ready VCFs and their indexes"))
-  }
+## Warnings in the per-task PLINK logs never reach the collected results.
+warn_rows <- lapply(tasks, function(tk) {
+  d <- exec_dir(tk)
+  if (is.na(d)) return(NULL)
+  logs <- list.files(d, pattern = "\\.log$", full.names = TRUE)
+  if (!length(logs)) return(NULL)
+  msgs <- unlist(lapply(logs, function(l) {
+    x <- read_lines(l, progress = FALSE)
+    x[str_detect(x, regex("^warning", ignore_case = TRUE))]
+  }))
+  if (!length(msgs)) return(NULL)
+  tibble(Task = tk, Warnings = length(msgs),
+         Example = str_trunc(str_squish(msgs[1]), 110))
+}) |> bind_rows()
 
-  show_table(inv, caption = sprintf("Every file in `%s` (%d files, %s).",
-                                    RD, length(all_files),
-                                    hsize(sum(file.info(all_files)$size))))
+if (nrow(warn_rows)) {
+  cat("## PLINK warnings\n\n")
+  show_table(warn_rows, caption = paste0(
+    "Warnings found in the per-task `.log` files. Most are routine (heterozygous ",
+    "haploid genotypes on the X chromosome, for instance); this table is here ",
+    "because these logs are not copied into the collected results."))
 }
 ```
 
@@ -1431,10 +1675,17 @@ if (nzchar(cfg_path) && file.exists(cfg_path)) {
              "to document the thresholds this run used."))
 }
 
+## Every task's command line is preserved in the run directory, which is the
+## most exact provenance record available for the run.
+d_any <- exec_dir("WriteLog")
+if (!is.na(d_any) && file.exists(file.path(d_any, "script"))) {
+  cat("Each task's exact command line is preserved in `call-<Task>/execution/script`.\n\n")
+}
+
 cat("\n**Report generated:** ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
     " · **R:** ", R.version.string,
-    " · **Quarto params:** `results_dir=", params$results_dir, "`",
-    if (nzchar(params$prefix)) paste0(", `prefix=", params$prefix, "`") else "",
+    " · **Cromwell run:** `", RD, "`",
+    if (nzchar(params$prefix)) paste0(" · `prefix=", params$prefix, "`") else "",
     "\n\n", sep = "")
 ```
 

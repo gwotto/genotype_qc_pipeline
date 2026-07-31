@@ -1,6 +1,5 @@
 # Genotype QC Pre-Imputation Pipeline
 
-**Version 0.2.0 — June 2026**
 
 ## Overview
 
@@ -29,7 +28,6 @@ This is commented out
 -->
 
 ![Pipeline graph](genotype_qc_preimputation.png)
-
 
 ---
 
@@ -265,6 +263,16 @@ Every key is prefixed with `genotype_qc_preimputation.`.
 | `ref_1kg_psam` | 1000G sample metadata file. Must contain a `SuperPop` column with values `EUR`, `AFR`, `EAS`, `SAS`, `AMR`. |
 | `hrc_ref_freq` | HRC r1.1 GRCh37 allele frequency file (`.tab.gz`). Download with `bash src/download_resources.bash`. |
 
+
+This script downloads a list of High-LD regions (hg19) and HRC reference panel frequency file for SNP ref/alt alignment:
+
+```bash
+# High-LD regions (hg19) and HRC frequency file
+bash src/download_resources.bash
+```
+The 1000 Genomes Phase 3 reference panel is required for ancestry assignment. A biallelic-SNP-only, hg19, PLINK binary version of the 1000G Phase 3 panel can be obtained from https://www.cog-genomics.org/plink/2.0/resources#1kg_phase3. The companion .psam file contains a SuperPop column with values: EUR, AFR, EAS, SAS, AMR, that are needed for the ancestry assignment.
+
+
 ### Script paths
 
 All scripts in `src/`. Set these to absolute paths.
@@ -392,36 +400,28 @@ Cromwell run directory but is not collected.
 
 ## QC report
 
-`src/genotype_qc_report.qmd` turns a collected results directory into a single
-self-contained HTML report:
+`src/genotype_qc_report.qmd` generates a single self-contained HTML report from the 
+Cromwell execution logs and output files.
+
 
 ```bash
 quarto render src/genotype_qc_report.qmd \
-    -P results_dir=./results/genotype_qc_preimputation_YYYY-MM-DD \
+    -P run_dir=/path/to/cromwell-executions/genotype_qc_preimputation/<uuid> \
     -P cohort="My cohort" \
     -P config_json=config/genotype_qc_preimputation_inputs.json \
-    --output-dir ./results/genotype_qc_preimputation_YYYY-MM-DD
+    --output-dir /somewhere/outside/the/run/directory
 ```
 
 | Parameter | Meaning |
 |-----------|---------|
-| `results_dir` | The collected results directory. Relative paths are resolved from `src/` and then upwards, so `./results` works from the repository root. |
+| `run_dir` | The Cromwell execution run dir, usually a uuid named directory. |
 | `cohort` | Free-text cohort name shown in the report header. Optional. |
 | `config_json` | The workflow inputs JSON, so the report can document the thresholds the run used. Optional. |
-| `prefix` | Output prefix. Auto-detected from `*_pipeline.log`; only needed if that file is absent. |
 
-The report contains, in pipeline order: headline counts; the per-step retention
-table and chart parsed from the pipeline log; the threshold sweep; per-chromosome
-variant counts before QC; the sex check status counts and the discordant
-samples; the ancestry PCA plot, assignment counts and confidence distribution;
-the MAC plot with a before/after allele-frequency summary; what HWE removed;
-the heterozygosity distribution, bounds and the samples it dropped; the final
-QC dataset size; relatedness counts, the pi-hat distribution and the closest
-pairs; the check-bim harmonisation counts; per-chromosome counts before QC
-versus after harmonisation; the VCF inventory with index check; the combined
-dataset in both PLINK formats; the covariate PC scree and PC1/PC2 by ancestry;
-the cohort composition crosstab; the unrelated subset; a "what to use for what"
-table; and an inventory of every file with its size and purpose.
+It finds each file in the `call-<Task>/execution` directory that wrote it, using
+the same task-to-output mapping as `collect_cromwell_results.bash`, and skips
+the duplicate copies Cromwell keeps under `execution/glob-*/` and
+`call-<Task>/inputs/`. On a retried task it reads the highest `attempt-N`.
 
 Everything is read from the log, the report tables and file metadata — no
 genotypes are parsed, so it renders in seconds. Files a run did not produce
@@ -431,21 +431,6 @@ by name so any `output_prefix` works.
 
 Requires `quarto` plus the R packages in `environment.yml` (`knitr`,
 `rmarkdown`, `tidyverse`; `jsonlite` only for the `config_json` table).
-
----
-
-## Reference files — how to obtain
-
-```bash
-# High-LD regions (hg19) and HRC frequency file
-bash src/download_resources.bash
-
-# 1000 Genomes Phase 3 reference panel
-# Obtain a biallelic-SNP-only, hg19, PLINK binary version of the 1000G
-# Phase 3 panel. The companion .psam file must contain a SuperPop column
-# with values: EUR, AFR, EAS, SAS, AMR. This can be obtained from 
-# https://www.cog-genomics.org/plink/2.0/resources#1kg_phase3
-```
 
 ---
 
