@@ -335,6 +335,7 @@ list for the heterozygosity and relatedness checks (step 7a, feeding steps
 | `pca_reference_populations` | `"ALL"` | Comma-separated list of 1000G superpopulations whose samples are included in the reference PCA. Possible values: any subset of `EUR,AFR,EAS,SAS,AMR`, or `"ALL"` to use all 2504 Phase 3 samples. Restricting to relevant populations can sharpen cluster separation for studies with limited ancestry diversity. |
 | `ancestry_prob_threshold` | `0.5` | Random forest prediction probability below which a study sample is labelled `"unassigned"` rather than assigned to a superpopulation. Range 0–1; increase for stricter assignment. |
 
+
 ### Ancestry-aware filtering parameters
 
 | Parameter | Default | Description |
@@ -417,6 +418,7 @@ quarto render src/genotype_qc_report.qmd \
 | `run_dir` | The Cromwell execution run dir, usually a uuid named directory. |
 | `cohort` | Free-text cohort name shown in the report header. Optional. |
 | `config_json` | The workflow inputs JSON, so the report can document the thresholds the run used. Optional. |
+| `prefix` | Output prefix; the output_prefix parameter auto-detected from *_pipeline.log if omitted. Optional. |
 
 It finds each file in the `call-<Task>/execution` directory that wrote it, using
 the same task-to-output mapping as `collect_cromwell_results.bash`, and skips

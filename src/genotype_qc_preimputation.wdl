@@ -1864,24 +1864,36 @@ task PrepareForImputation {
                 continue
             fi
 
-            # Sort by position (required by tabix) and convert to VCF
+
+            # convert to VCF
             # --real-ref-alleles preserves A1/A2 as ref/alt correctly
-            ~{plink_bin} \
-                --bfile "$PLINK_PREFIX" \
-                --recode vcf \
-                --real-ref-alleles \
-                --out ~{output_prefix}_chr${CHR}
+            # vcf is generated already by Run-plink.sh, so this step can be omitted
+ 
+            # ~{plink_bin} \
+            #     --bfile "$PLINK_PREFIX" \
+            #     --recode vcf \
+            #     --real-ref-alleles \
+            #     --out ~{output_prefix}_chr${CHR}
 
             # sort VCF by position (required by tabix)
-            # bgzip the sorted VCF and index
-            grep "^#" ~{output_prefix}_chr${CHR}.vcf > ~{output_prefix}_chr${CHR}_sorted.vcf
-            grep -v "^#" ~{output_prefix}_chr${CHR}.vcf \
+            grep "^#" ${PLINK_PREFIX}.vcf > ~{output_prefix}_chr${CHR}_sorted.vcf
+            grep -v "^#" ${PLINK_PREFIX}.vcf \
                 | sort -k1,1V -k2,2n \
                 >> ~{output_prefix}_chr${CHR}_sorted.vcf
 
+            # this was the previous sorting command for the vcf genersted by plink
+            # grep "^#" ~{output_prefix}_chr${CHR}.vcf > ~{output_prefix}_chr${CHR}_sorted.vcf
+            # grep -v "^#" ~{output_prefix}_chr${CHR}.vcf \
+            #     | sort -k1,1V -k2,2n \
+            #     >> ~{output_prefix}_chr${CHR}_sorted.vcf
+
+            # bgzip the sorted VCF and index
             ~{bgzip_bin} ~{output_prefix}_chr${CHR}_sorted.vcf
             mv ~{output_prefix}_chr${CHR}_sorted.vcf.gz ~{output_prefix}_chr${CHR}.vcf.gz
             ~{tabix_bin} -p vcf ~{output_prefix}_chr${CHR}.vcf.gz
+
+            # remove uncompressed vcf
+            rm ${PLINK_PREFIX}.vcf
 
         done
 

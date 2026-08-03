@@ -48,6 +48,8 @@ Edit `config/genotype_qc_preimputation_inputs.json`:
   define the ancestry PCA space (e.g. `"EUR,AFR,EAS,SAS"` or `"ALL"`).
 - Set `test_populations` to the superpopulation(s) on which HWE and
   heterozygosity outlier detection should run (e.g. `"EUR"` or `"ALL"`).
+- Set `subset_population` to create a subset sample of unrelated samples, 
+  such as `"EUR"` as a user-friendly preselection. 
 
 See `doc/pipeline.md` for the complete parameter reference.
 
@@ -58,7 +60,25 @@ java -jar cromwell-92.jar run src/genotype_qc_preimputation.wdl \
      -i config/genotype_qc_preimputation_inputs.json
 ```
 
-### 5. Collect results
+### 5. Render the QC report
+
+```bash
+quarto render src/genotype_qc_report_cromwell.qmd \
+    -P run_dir=/path/to/cromwell-executions/genotype_qc_preimputation/<uuid> \
+    -P cohort="My cohort" \
+    --output-dir /somewhere/outside/the/run/directory
+```
+
+This reads the Cromwell execution run directory and writes a single self-contained
+`genotype_qc_report.html`: per-step counts, every diagnostic plot, the ancestry
+and relatedness tables, the check-bim harmonisation summary, and an inventory
+of every delivered file with a note on what it is for. Nothing is recomputed
+from the genotypes — the report only reads what the run wrote.
+
+Files a run did not produce (for example the sex check on an autosome-only
+array) are reported as absent rather than breaking the render.
+
+### 6. Collect results
 
 ```bash
 bash src/collect_cromwell_results.bash <cromwell-run-uuid-dir> ./results
@@ -69,25 +89,6 @@ Outputs land in `results/qc_dataset/` (final PLINK files),
 `results/pca/` (ancestry assignments and PCA plots), 
 `results/subset/` (subset of unrelated EUR samples), and
 `results/reports/` (sex check, het outliers, relatedness flags, log).
-
-### 6. Render the QC report
-
-```bash
-quarto render src/genotype_qc_report.qmd \
-    -P results_dir=./results \
-    -P cohort="My cohort" \
-    -P config_json=config/genotype_qc_preimputation_inputs.json \
-    --output-dir ./results
-```
-
-This reads the collected results directory and writes a single self-contained
-`genotype_qc_report.html`: per-step counts, every diagnostic plot, the ancestry
-and relatedness tables, the check-bim harmonisation summary, and an inventory
-of every delivered file with a note on what it is for. Nothing is recomputed
-from the genotypes — the report only reads what the run wrote.
-
-Files a run did not produce (for example the sex check on an autosome-only
-array) are reported as absent rather than breaking the render.
 
 ---
 
