@@ -63,7 +63,7 @@ java -jar cromwell-92.jar run src/genotype_qc_preimputation.wdl \
 ### 5. Render the QC report
 
 ```bash
-quarto render src/genotype_qc_report_cromwell.qmd \
+quarto render src/genotype_qc_report.qmd \
     -P run_dir=/path/to/cromwell-executions/genotype_qc_preimputation/<uuid> \
     -P cohort="My cohort" \
     --output-dir /somewhere/outside/the/run/directory

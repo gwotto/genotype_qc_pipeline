@@ -67,12 +67,16 @@ cp "$CALL"/*_pipeline.log "$OUTDIR/"
 # HRC-panel filtering). Relatedness samples are flagged but NOT removed.
 echo "Copying combined imputation-ready dataset (PLINK 1 bed/bim/fam)..."
 CALL="$BASE/call-PrepareForImputation/execution"
-cp "$CALL"/*_combined.bed "$CALL"/*_combined.bim "$CALL"/*_combined.fam "$OUTDIR/qc_dataset/"
+if [ -d "$CALL" ]; then
+    cp "$CALL"/*_combined.bed "$CALL"/*_combined.bim "$CALL"/*_combined.fam "$OUTDIR/qc_dataset/"
+fi
 
 # -- Same dataset in PLINK 2 format (pgen/pvar/psam) --------------------------
 echo "Copying combined imputation-ready dataset (PLINK 2 pgen/pvar/psam)..."
 CALL="$BASE/call-CombinedToPlink2/execution"
-cp "$CALL"/*.pgen "$CALL"/*.pvar "$CALL"/*.psam "$OUTDIR/qc_dataset/"
+if [ -d "$CALL" ]; then
+    cp "$CALL"/*.pgen "$CALL"/*.pvar "$CALL"/*.psam "$OUTDIR/qc_dataset/"
+fi
 
 # -- Threshold sweep plot (shows SNP/sample retention across thresholds) --------
 echo "Copying threshold sweep plot..."

@@ -37,7 +37,7 @@ Renders a standalone HTML report from a genotype_qc_preimputation run,
 reading the Cromwell run directory.
 
 USAGE
-  quarto render src/genotype_qc_report_cromwell.qmd \
+  quarto render src/genotype_qc_report.qmd \
       -P run_dir=/path/to/cromwell-executions/genotype_qc_preimputation/<uuid> \
       -P cohort="My cohort" \
       -P config_json=config/genotype_qc_preimputation_inputs.json \
@@ -366,7 +366,15 @@ step_counts <- tibble(line = log_txt) |>
   mutate(order = row_number())
 
 first_step <- if (nrow(step_counts)) slice(step_counts, 1) else NULL
-last_step  <- if (nrow(step_counts)) slice(step_counts, n()) else NULL
+## last step: last line in the output log, might not be what want
+# last_step  <- if (nrow(step_counts)) slice(step_counts, n()) else NULL
+
+## define last step by step number, rather than the last line in the output log
+last_step <- step_counts |>
+  filter(str_detect(step, regex("^Step 1[01]\\b"))) |>
+  slice_tail(n = 1)
+if (nrow(last_step) == 0) last_step <- if (nrow(step_counts)) slice(step_counts, n()) else NULL
+
 
 ## Free-text log lines that are not SNP/sample counts (ancestry, LD, PCA, ...)
 log_notes <- log_txt[str_detect(log_txt, "^Step ") &

@@ -69,7 +69,7 @@ version 1.0
 
 workflow genotype_qc_preimputation {
 
-     String pipeline_version = "v2026-07.1"
+     String pipeline_version = "v2026-08.1"
 
     input {
         # -- Input genotype files -------------------------------------------
@@ -117,19 +117,19 @@ workflow genotype_qc_preimputation {
 
         # -- PCA ----------------------------------------------------------------
         ## PCA to assign ancestry
-        Int    n_pcs     # Number of principal components to compute
+        Int    n_ancestry_pcs  = 10   # Number of principal components to compute
         Float  ancestry_prob_threshold = 0.5  # Probability threshold for ancestry assignment (0.0-1.0)
 
         # Number of within-cohort principal components emitted as association
         # covariates for the final (imputation-prepared) dataset. Computed on
         # unrelated samples and projected onto all samples.
-        Int    n_covariate_pcs
+        Int    n_covariate_pcs = 20
 
         # Additional deliverable: an unrelated single-ancestry subset of the
         # imputation-ready dataset, exported in PLINK 1 and PLINK 2 formats with
         # its own within-subset covariate PCs. Superpopulation label to select
         # (must match AncestryPCA labels: EUR/AFR/EAS/SAS/AMR).
-        String subset_population
+        String subset_population = "EUR"
 
         # -- 1000 Genomes ancestry PCA --------------------------------------
         # Pre-processed 1000G Phase 3 (hg19) reference panel in PLINK binary
@@ -144,12 +144,12 @@ workflow genotype_qc_preimputation {
         # -- Ancestry subset selection --------------------------------------
         # Comma-separated list of superpopulations to run variant/sample
         # detection on (e.g. "EUR,AFR"). Use "ALL" to run on entire cohort.
-        String test_populations
+        String test_populations = "EUR"
 
         # Comma-separated list of 1000G superpopulations to include in the
         # ancestry PCA reference panel (e.g. "EUR,AFR,EAS,SAS,AMR").
         # Use "ALL" to include all 2504 phase-3 samples.
-        String pca_reference_populations
+        String pca_reference_populations = "ALL"
 
         # -- Imputation preparation ----------------------------------------------
         File   check_bim_pl  # Will Rayner's HRC-1000G-check-bim.pl script
@@ -333,7 +333,7 @@ workflow genotype_qc_preimputation {
             ld_window_kb        = ld_window_kb,
             ld_step             = ld_step,
             ld_r2               = ld_r2,
-            n_pcs               = n_pcs,
+            n_ancestry_pcs               = n_ancestry_pcs,
             ancestry_prob_threshold    = ancestry_prob_threshold,
             output_prefix              = output_prefix + "_ancestry_pca",
             pca_reference_populations  = pca_reference_populations,
@@ -612,7 +612,7 @@ workflow genotype_qc_preimputation {
             ld_window_kb  = ld_window_kb,
             ld_step       = ld_step,
             ld_r2         = ld_r2,
-            n_pcs         = n_covariate_pcs,
+            n_covariate_pcs         = n_covariate_pcs,
             output_prefix = output_prefix + "_covariate_pca",
             plink_bin     = plink_bin,
             plink2_bin    = plink2_bin
@@ -668,7 +668,7 @@ workflow genotype_qc_preimputation {
             ld_window_kb  = ld_window_kb,
             ld_step       = ld_step,
             ld_r2         = ld_r2,
-            n_pcs         = n_covariate_pcs,
+            n_covariate_pcs         = n_covariate_pcs,
             output_prefix = output_prefix + "_unrelated_" + subset_population + "_pca",
             plink_bin     = plink_bin,
             plink2_bin    = plink2_bin
@@ -1569,7 +1569,7 @@ task AncestryPCA {
         Int    ld_window_kb         # Sliding window size in kb
         Int    ld_step              # Step size in SNPs
         Float  ld_r2                # r² pruning threshold
-        Int    n_pcs
+        Int    n_ancestry_pcs
         Float  ancestry_prob_threshold # ancestry assignment probability threshold
         String output_prefix
         String pca_reference_populations  # "ALL" or comma-separated e.g. "EUR,AFR,EAS,SAS,AMR"
@@ -1651,7 +1651,7 @@ task AncestryPCA {
         ~{plink2_bin} \
             --bfile ${ref_pca} \
             --extract ref_prune.prune.in \
-            --pca ~{n_pcs} biallelic-var-wts \
+            --pca ~{n_ancestry_pcs} biallelic-var-wts \
             --out ~{output_prefix}
 
         # Step 4a: reference allele frequencies for projection standardisation.
@@ -1669,7 +1669,7 @@ task AncestryPCA {
         # Column 2 = variant ID (rsID), column 4 = scored allele (non-major).
         # PLINK2 resolves strand orientation automatically from the allele column.
         # No chr:pos renaming is needed: the reference BIM uses rsIDs throughout.
-        score_end_col=$(( ~{n_pcs} + 4 ))
+        score_end_col=$(( ~{n_ancestry_pcs} + 4 ))
         ~{plink2_bin} \
             --bed ~{bed_file} \
             --bim ~{bim_file} \
@@ -1688,7 +1688,7 @@ task AncestryPCA {
             ~{output_prefix}.eigenvec \
             all_study_projected.sscore \
             ~{ref_psam} \
-            ~{n_pcs} \
+            ~{n_ancestry_pcs} \
             ~{output_prefix} \
             ~{output_prefix}.eigenval \
             ~{ancestry_prob_threshold}
@@ -1874,10 +1874,19 @@ task PrepareForImputation {
             #     --recode vcf \
             #     --real-ref-alleles \
             #     --out ~{output_prefix}_chr${CHR}
-
+            
+            # Verify the VCF exists before trying to grep
+            VCF_FILE="${PLINK_PREFIX}.vcf"
+            if [ ! -f "$VCF_FILE" ]; then
+                echo "ERROR: VCF file not found for chromosome $CHR: $VCF_FILE" >&2
+                echo "Check if Run-plink.sh completed successfully." >&2
+                exit 1
+            fi
+ 
+             
             # sort VCF by position (required by tabix)
-            grep "^#" ${PLINK_PREFIX}.vcf > ~{output_prefix}_chr${CHR}_sorted.vcf
-            grep -v "^#" ${PLINK_PREFIX}.vcf \
+            grep "^#" "$VCF_FILE" > ~{output_prefix}_chr${CHR}_sorted.vcf
+            grep -v "^#" "$VCF_FILE" \
                 | sort -k1,1V -k2,2n \
                 >> ~{output_prefix}_chr${CHR}_sorted.vcf
 
@@ -1893,7 +1902,7 @@ task PrepareForImputation {
             ~{tabix_bin} -p vcf ~{output_prefix}_chr${CHR}.vcf.gz
 
             # remove uncompressed vcf
-            rm ${PLINK_PREFIX}.vcf
+            rm "$VCF_FILE"
 
         done
 
@@ -2011,9 +2020,21 @@ task SubsetUnrelatedPopulation {
         # Related IIDs to exclude (skip header lines; IID is the last column).
         grep -v '^#' ~{related_list} 2>/dev/null | awk '{print $NF}' > related_iids.txt || true
 
+        # To remove
         # Unrelated population IIDs = population IIDs minus related IIDs.
-        awk 'NR==FNR{rel[$1]=1; next} !($1 in rel){print $1}' \
-            related_iids.txt pop_iids.txt > keep_iids.txt
+        # awk 'NR==FNR{rel[$1]=1; next} !($1 in rel){print $1}' \
+        #     related_iids.txt pop_iids.txt > keep_iids.txt
+
+        # Test if the file related_iids.txt exists and is not empty
+        if [ -s related_iids.txt ]; then
+           # Unrelated population IIDs = population IIDs minus related IIDs.
+            awk 'NR==FNR{rel[$1]=1; next} !($1 in rel){print $1}' \
+                related_iids.txt pop_iids.txt > keep_iids.txt
+        else
+            # If no related, keep all
+            cp pop_iids.txt keep_iids.txt
+        fi
+
 
         # Resolve FID/IID from the genotype .fam.
         awk 'NR==FNR{keep[$1]=1; next} ($2 in keep){print $1, $2}' \
@@ -2075,7 +2096,7 @@ task CovariatePCA {
         Int    ld_window_kb
         Int    ld_step
         Float  ld_r2
-        Int    n_pcs
+        Int    n_covariate_pcs
         String output_prefix
         String plink_bin
         String plink2_bin
@@ -2122,12 +2143,12 @@ task CovariatePCA {
             ${REMOVE_ARG} \
             --extract cov_prune.prune.in \
             --read-freq cov_ref_freq.afreq \
-            --pca ~{n_pcs} biallelic-var-wts \
+            --pca ~{n_covariate_pcs} biallelic-var-wts \
             --out ~{output_prefix}
 
         # (5) Project ALL samples (related included) onto the unrelated axes.
         # eigenvec.var: col 2 = variant ID, col 4 = scored allele, cols 5.. = PCs.
-        score_end=$(( ~{n_pcs} + 4 ))
+        score_end=$(( ~{n_covariate_pcs} + 4 ))
         ~{plink2_bin} \
             --bed ~{bed_file} \
             --bim ~{bim_file} \
@@ -2141,7 +2162,7 @@ task CovariatePCA {
         # (6) Build the covariate table: FID, IID, PC1..PCn for all samples.
         # The projected .sscore ends with the n PC score columns; take the first
         # two columns (FID, IID) and the last n columns.
-        awk -v n=~{n_pcs} '
+        awk -v n=~{n_covariate_pcs} '
             NR==1 {
                 printf "FID\tIID";
                 for (i=1;i<=n;i++) printf "\tPC%d", i;
@@ -2156,7 +2177,7 @@ task CovariatePCA {
 
         n_prune=$(wc -l < cov_prune.prune.in)
         printf "%-42s  %d PCs on %d LD-pruned SNPs (unrelated), projected to all\n" \
-            "Step 12  Covariate PCA" "~{n_pcs}" "$n_prune" > cov_log.txt
+            "Step 12  Covariate PCA" "~{n_covariate_pcs}" "$n_prune" > cov_log.txt
     >>>
     output {
         File   eigenvec     = "~{output_prefix}.eigenvec"

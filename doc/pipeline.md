@@ -172,6 +172,48 @@ Two things come out of this step:
 Step 10a reports variant counts per chromosome on the combined file, so
 the numbers match what was actually written to the VCFs.
 
+#### Reading `check-bim.log`
+
+Figures below are from the BCS70 test run — 517,552
+variants entering step 10, 503,680 delivered — and are illustrative, not
+thresholds.
+
+**`Total checked`:** The number of variants that could actually be compared with the reference, 
+i.e. the sum of `ID matches HRC` and `ID Doesn’t match HRC`.
+
+**`Total Position Matches`:** The number of bim variants
+found at a matching `chr-pos` in the reference, regardless of whether the
+variant ID, the alleles or the strand agreed. HRC r1.1 catalogues ~39.2M sites at MAC ≥ 5 and
+genotyping arrays target precisely these common, validated sites. For that reason, the proportion of matched sites is expected to be very high. The row is informative only when it is *low* — a
+near-zero value means the array and the reference are on different genome
+builds. `Position different from <ref>` counts variants whose rsID is present in the reference but at a different genomic position. Non-zero values usually indicate genome build mismatches, outdated rsIDs, merged or split dbSNP records, or incorrect variant annotation.
+
+**`Non Matching alleles`:** The number of variants that were found at the same position in the reference but whose allele pair does not match the reference allele pair. This is usually a small number, and is often due to a manifest error or a systematic allele coding difference between the array and the reference. The script generates `Allele-<stem>-HRC.txt` so that PLINK can update the allele coding.
+
+**`ID and allele mismatching`:** The number of variants that were found at the same position in the reference but whose alleles do not match and whose IDs also do not match. This is usually a small number, and is often due to a manifest error or a systematic allele coding difference between the array and the reference. The script writes `ID-Allele-<stem>-HRC.txt` to update both the variant ID and allele coding.
+
+**`ID Doesn’t match HRC`:** A large count is usually cosmetic. On the BCS70 GSA
+array, 240,605 of the 245,976 mismatches are IDs of the form
+`GSA-rs4475691` — the correct rsID behind a manifest prefix. The script
+writes `ID-<stem>-HRC.txt` to rename them; nothing is dropped.
+
+**Strand and ref/alt changes**: 
+
+The strand/ref-alt rows are really a 2×2:
+
+|  | ref/alt already right | ref/alt swap needed |  |
+|---|---|---|---|
+| forward strand | 40,881 (`SNPs not changed`) | 213,641 | 254,522 (`Strand ok`) |
+| reverse strand (needs flip) | 39,454 | 211,966 | 251,420 (`Strand to change`) |
+| column total | 80,335 | 425,607 (`SNPs to change ref alt`) | 505,942 (`Total checked Strand`) |
+
+`Total Strand ok` equals `SNPs not changed` + `SNPs to change ref alt`. It is therefore the number of variants already on the correct DNA strand, irrespective of whether their REF/ALT (A1/A2) ordering must be swapped.
+
+A large `SNPs to change ref alt` is expected rather than a defect: In many PLINK workflows, A1 is not guaranteed to correspond to the reference genome REF allele. Since the HRC panel uses the genome REF/ALT alleles, many variants legitimately require a REF/ALT swap.In many PLINK workflows, A1 is not guaranteed to correspond to the reference genome REF allele. Since the HRC panel uses the genome REF/ALT alleles, many variants legitimately require a REF/ALT swap. Likewise, TOP/BOT coding frequently results in a substantial proportion of SNPs requiring strand flips after comparison with a forward-strand reference, but the exact fraction depends on the array and the export format. Around half is common, but not a universal expectation.
+
+**`Total removed for allele Frequency diff`:** The number of variants that were removed because the allele frequency in the cohort differed from the reference by more than 0.2. This is a key QC metric: a large spike points to a genuine cohort/reference mismatch — an inappropriate ancestry reference, or systematic allele miscoding.
+
+
 ### Step 11 — PLINK 2 conversion
 
 `--make-pgen` writes the combined dataset a second time in PLINK 2 format
@@ -331,7 +373,7 @@ list for the heterozygosity and relatedness checks (step 7a, feeding steps
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `n_pcs` | `10` | Number of principal components to compute and use for ancestry classification. |
+| `n_ancestry_pcs` | `10` | Number of principal components to compute and use for ancestry classification. |
 | `pca_reference_populations` | `"ALL"` | Comma-separated list of 1000G superpopulations whose samples are included in the reference PCA. Possible values: any subset of `EUR,AFR,EAS,SAS,AMR`, or `"ALL"` to use all 2504 Phase 3 samples. Restricting to relevant populations can sharpen cluster separation for studies with limited ancestry diversity. |
 | `ancestry_prob_threshold` | `0.5` | Random forest prediction probability below which a study sample is labelled `"unassigned"` rather than assigned to a superpopulation. Range 0–1; increase for stricter assignment. |
 
@@ -352,7 +394,7 @@ list for the heterozygosity and relatedness checks (step 7a, feeding steps
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `n_covariate_pcs` | *required* (config ships `20`) | Number of within-cohort PCs computed at step 12 and recomputed within the subset at step 13. Compute generously and select downstream using the eigenvalues — 20 costs little and lets you decide later. |
+| `n_covariate_pcs` | `20` | Number of within-cohort PCs computed at step 12 and recomputed within the subset at step 13. |
 | `subset_population` | `"EUR"` | Superpopulation retained for the step 13 unrelated subset. Must be one of `EUR,AFR,EAS,SAS,AMR` and must appear in the ancestry assignments, or the subset will be empty. |
 
 ---
