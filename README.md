@@ -138,6 +138,10 @@ Outputs land in `results/qc_dataset/` (final PLINK files),
 - Chang CC et al. (2015) *GigaScience* doi:10.1186/s13742-015-0047-8
 - Manichaikul A et al. (2010) *Bioinformatics* doi:10.1093/bioinformatics/btq559
 
+## Version history
+
+- v2026-08.2 (2026-08-02) — Documentation updates.
+- v2026-08.1 (2026-08-01) — End-to-end WDL workflow for genotype QC pre-imputation.
 ## License
 
 BSD 3-Clause. See [LICENSE](LICENSE).
