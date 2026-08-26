@@ -9,10 +9,10 @@ the Anderson et al. (2010) protocol with ancestry-aware extensions, and
 produces a clean PLINK binary dataset and per-chromosome VCFs ready for
 submission to imputation servers (HRC, TOPMed).
 
-The pipeline is run with Cromwell:
+The pipeline is run with Cromwell (https://cromwell.readthedocs.io/en/latest/):
 
 ```bash
-java -jar cromwell-92.jar run src/genotype_qc_preimputation.wdl \
+java -jar cromwell-<version>.jar run src/genotype_qc_preimputation.wdl \
      -i config/genotype_qc_preimputation_inputs.json
 ```
 
@@ -83,7 +83,7 @@ study composition.
 2. If `pca_reference_populations` is not `"ALL"`, the reference panel is
    filtered to the listed superpopulations before PCA.
 3. The filtered reference is LD-pruned.
-4. PLINK2 `--pca biallelic-var-wts` computes `n_pcs` PCs on the reference
+4. PLINK2 `--pca biallelic-var-wts` computes `n_ancestry_pcs` PCs on the reference
    and saves per-variant weights in `.eigenvec.var`.
 5. Reference allele frequencies are saved (`--freq`) for use in step 6.
 6. All study samples are projected with `--score … variance-standardize`.
@@ -134,8 +134,7 @@ input to the heterozygosity check (step 7b) and the relatedness check
 
 Per-sample heterozygosity (F-statistic) is computed on LD-pruned variants.
 Samples more than 3 SD from the mean within the tested ancestry subset are
-flagged and removed — but only from that subset. The removed samples are
-not propagated to the rest of the cohort, preserving samples from
+flagged and removed — but only from that subset, preserving samples from
 populations not covered by `test_populations`.
 
 ### Step 8 — Chromosome filter
@@ -151,7 +150,75 @@ can be supplied to PLINK `--remove` in downstream association tests.
 
 Output: `relatedness_flagged_samples.txt`
 
-### Step 10 — Prepare for imputation
+### Step 10 — Combined QC dataset (PLINK 1 + PLINK 2)
+
+The step 8 QC dataset, all selected chromosomes, written out under a `*_combined` stem.
+
+`--make-pgen` then writes the same dataset in PLINK 2 format
+(`pgen`/`pvar`/`psam`), a format convenience for tools that require PLINK 2
+input (and for the `--glm` association workflow in particular).
+
+This step sits **before** the imputation prep (step 13) in order to preserve
+the variants that get dropped by the HRC/TOPMed harmonisation in step 13.
+
+### Step 11 — Within-cohort covariate PCA
+
+Principal components for use as association covariates. Unlike step 4,
+which places samples against an external reference to infer ancestry,
+this PCA describes structure *within* the cohort.
+
+This procedure runs PCA on the **unrelated** samples only, then projects all samples onto those axes.
+
+1. LD-prune the combined dataset, autosomes only, excluding `ld_regions`.
+2. Compute allele frequencies on the **unrelated** samples (the step 9
+   KING flags supply `--remove`).
+3. Run `--pca n_covariate_pcs biallelic-var-wts` on those unrelated
+   samples, saving variant weights.
+4. Project **all** samples — related included — onto those axes with
+   `--score`, standardised against the same frequencies.
+
+Every participant therefore receives PCs on one common scale, and no
+sample is lost. If no relatives were flagged, steps 2–4 run as PCA over every sample.
+
+Output: `*_covariate_pca_covariates.tsv` (`FID IID PC1..PCn`) plus the
+eigenvalues, for judging how many PCs to actually include as covariates.
+
+### Sample QC status table
+
+Ancestry assignments (step 4), relatedness flags (step 9) and covariate PCs 
+(step 11) are merged into one row per participant:
+
+```
+FID  IID  ancestry  ancestry_prob  related  PC1 … PCn
+```
+
+`related` is `TRUE`/`FALSE` rather than a pair list, so the file can be
+filtered directly. This is the intended entry point for cohort
+selection — pick your ancestry stratum, decide whether to drop relatives,
+and read off covariates, all without touching the genotype files.
+
+Output: `*_sample_qc_status.tsv`
+
+### Step 12 — Unrelated single-ancestry subset
+
+An additional deliverable for the common case of a single-population
+association analysis. Samples are kept if they are **both** assigned to
+`subset_population` (default `EUR`) **and** not flagged as related at step
+9. Selection is by IID, which is safe because step 0b guarantees unique
+IIDs.
+
+The subset is exported as PLINK 1 (bed/bim/fam) *and* PLINK 2
+(pgen/pvar/psam), and covariate PCs are **recomputed within the subset**.
+That recomputation matters: whole-cohort PCs largely capture
+between-ancestry differences, which carry no information once the cohort
+has been restricted to one population. Within-subset PCs describe the
+finer-grained structure that remains, and are the correct covariates for
+a within-population test.
+
+Because every sample here is already unrelated, this PCA has no relatives
+to exclude and reduces to a straightforward PCA over the subset.
+
+### Step 13 — Prepare for imputation
 
 Will Rayner's `HRC-1000G-check-bim.pl` harmonises the dataset against the
 HRC or TOPMed frequency reference: checks strand, ref/alt assignment, and
@@ -159,17 +226,14 @@ frequency concordance. Variants absent from the reference, ambiguous A/T
 and C/G SNPs that cannot be strand-resolved, and variants whose allele
 frequency diverges sharply from the reference are dropped.
 
-Two things come out of this step:
+This step generates the **per-chromosome VCFs** (bgzipped and
+tabix-indexed), ready for submission to an imputation server.
 
-- **Per-chromosome VCFs** (bgzipped and tabix-indexed) ready for
-  submission to an imputation server.
-- **A combined dataset** — the per-chromosome PLINK filesets merged back
-  into a single `*_imputation_combined` bed/bim/fam. This is the PLINK
-  equivalent of the VCFs: same harmonised, strand-corrected variant set.
-  Steps 11–13 all build on it, *not* on the step 8 output.
+Step 13a reports variant counts per chromosome. It reads a concatenation of
+the per-chromosome `*-updated-chr*.bim` files, so the numbers match what was 
+actually written to the VCFs.
 
-Step 10a reports variant counts per chromosome on the combined file, so
-the numbers match what was actually written to the VCFs.
+`Run-plink.sh` writes each chromosome's bim and VCF from the same fileset.
 
 #### The `check-bim.log`
 
@@ -210,78 +274,11 @@ A large `SNPs to change ref alt` is expected rather than a defect: In many PLINK
 **`Total removed for allele Frequency diff`:** The number of variants that were removed because the allele frequency in the cohort differed from the reference by more than 0.2 (script default). This is a key QC metric: a large spike points to a genuine cohort/reference mismatch — an inappropriate ancestry reference, or systematic allele miscoding.
 
 
-### Step 11 — PLINK 2 conversion
-
-`--make-pgen` writes the combined dataset a second time in PLINK 2 format
-(`pgen`/`pvar`/`psam`). Nothing is filtered; this is a format convenience
-for tools that require PLINK 2 input (and for the `--glm` association
-workflow in particular).
-
-### Step 12 — Within-cohort covariate PCA
-
-Principal components for use as association covariates. Unlike step 4,
-which places samples against an external reference to infer ancestry,
-this PCA describes structure *within* your own cohort.
-
-The procedure avoids two common mistakes — letting relatives dominate the
-axes, and dropping related samples from the output:
-
-1. LD-prune the combined dataset, autosomes only, excluding `ld_regions`.
-2. Compute allele frequencies on the **unrelated** samples (the step 9
-   KING flags supply `--remove`).
-3. Run `--pca n_covariate_pcs biallelic-var-wts` on those unrelated
-   samples, saving variant weights.
-4. Project **all** samples — related included — onto those axes with
-   `--score`, standardised against the same frequencies.
-
-Every participant therefore receives PCs on one common scale, and no
-sample is lost. If no relatives were flagged, steps 2–4 degrade
-gracefully to a plain PCA over everyone.
-
-Output: `*_covariate_pca_covariates.tsv` (`FID IID PC1..PCn`) plus the
-eigenvalues, for judging how many PCs to actually include as covariates.
-
-### Sample QC status table
-
-Not a filtering step — a join. Ancestry assignments (step 4), relatedness
-flags (step 9) and covariate PCs (step 12) are merged into one row per
-participant:
-
-```
-FID  IID  ancestry  ancestry_prob  related  PC1 … PCn
-```
-
-`related` is `TRUE`/`FALSE` rather than a pair list, so the file can be
-filtered directly. This is the intended entry point for cohort
-selection — pick your ancestry stratum, decide whether to drop relatives,
-and read off covariates, all without touching the genotype files.
-
-Output: `*_sample_qc_status.tsv`
-
-### Step 13 — Unrelated single-ancestry subset
-
-An additional deliverable for the common case of a single-population
-association analysis. Samples are kept if they are **both** assigned to
-`subset_population` (default `EUR`) **and** not flagged as related at step
-9. Selection is by IID, which is safe because step 0b guarantees unique
-IIDs.
-
-The subset is exported as PLINK 1 (bed/bim/fam) *and* PLINK 2
-(pgen/pvar/psam), and covariate PCs are **recomputed within the subset**.
-That recomputation matters: whole-cohort PCs largely capture
-between-ancestry differences, which carry no information once the cohort
-has been restricted to one population. Within-subset PCs describe the
-finer-grained structure that remains, and are the correct covariates for
-a within-population test.
-
-Because every sample here is already unrelated, this PCA has no relatives
-to exclude and reduces to a straightforward PCA over the subset.
-
 ---
 
 ## Configuration
 
-All parameters live in `config/genotype_qc_preimputation_inputs.json`.
+All parameters are set in `config/genotype_qc_preimputation_inputs.json`.
 Every key is prefixed with `genotype_qc_preimputation.`.
 
 ### Input files
@@ -290,7 +287,7 @@ Every key is prefixed with `genotype_qc_preimputation.`.
 |-----------|-------------|
 | `bed_file`, `bim_file`, `fam_file` | PLINK binary input. Supply these **or** ped/map, not both. |
 | `ped_file`, `map_file` | PLINK text input (converted to binary automatically). |
-| `output_prefix` | String prefix for all output files (e.g. `"array_qc"`). |
+| `output_prefix` | String prefix for all output files (e.g. the cohort name). |
 
 ### Reference files
 
@@ -370,7 +367,7 @@ list for the heterozygosity and relatedness checks (step 7a, feeding steps
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `n_ancestry_pcs` | `10` | Number of principal components to compute and use for ancestry classification. |
-| `pca_reference_populations` | `"ALL"` | Comma-separated list of 1000G superpopulations whose samples are included in the reference PCA. Possible values: any subset of `EUR,AFR,EAS,SAS,AMR`, or `"ALL"` to use all 2504 Phase 3 samples. Restricting to relevant populations can sharpen cluster separation for studies with limited ancestry diversity. |
+| `pca_reference_populations` | `"ALL"` | Comma-separated list of 1000G superpopulations whose samples are included in the reference PCA. Possible values: any subset of `EUR,AFR,EAS,SAS,AMR`, or `"ALL"` to use all 2504 Phase 3 samples. |
 | `ancestry_prob_threshold` | `0.5` | Random forest prediction probability below which a study sample is labelled `"unassigned"` rather than assigned to a superpopulation. Range 0–1; increase for stricter assignment. |
 
 
@@ -386,12 +383,12 @@ list for the heterozygosity and relatedness checks (step 7a, feeding steps
 |-----------|---------|-------------|
 | `chr_args` | `"--chr 1-23"` | PLINK chromosome filter applied at step 8. Use `"--chr 1-22"` for autosomes only or `"--autosome"` as an alternative. |
 
-### Post-imputation-prep deliverables
+### Analysis deliverables
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `n_covariate_pcs` | `20` | Number of within-cohort PCs computed at step 12 and recomputed within the subset at step 13. |
-| `subset_population` | `"EUR"` | Superpopulation retained for the step 13 unrelated subset. Must be one of `EUR,AFR,EAS,SAS,AMR` and must appear in the ancestry assignments, or the subset will be empty. |
+| `n_covariate_pcs` | `20` | Number of within-cohort PCs computed at step 11 and recomputed within the subset at step 12. |
+| `subset_population` | `"EUR"` | Superpopulation retained for the step 12 unrelated subset. Must be one of `EUR,AFR,EAS,SAS,AMR` and must appear in the ancestry assignments, or the subset will be empty. |
 
 ---
 
@@ -402,8 +399,8 @@ After running `bash src/collect_cromwell_results.bash <run-dir> ./results`:
 ```
 results/
   *_pipeline.log       Per-step SNP/sample counts for the whole run
-  qc_dataset/          Combined imputation-ready dataset (step 10 output,
-                       harmonised): PLINK 1 bed/bim/fam + PLINK 2 pgen/pvar/psam
+  qc_dataset/          Combined QC dataset (step 10 output, full QC variant
+                       set): PLINK 1 bed/bim/fam + PLINK 2 pgen/pvar/psam
   vcfs/                chr1–23.vcf.gz + .tbi — imputation-ready VCFs
   pca/                 Ancestry PCA (eigenvec, eigenval, eigenvec.var, sscore,
                        prune.in, ancestry_assignments.tsv) and within-cohort
@@ -417,17 +414,17 @@ results/
                        within-subset *_covariates.tsv + eigenval
 ```
 
-Note that `qc_dataset/` holds the **step 10 harmonised** dataset, not the
-step 8 output. It is the PLINK counterpart of the VCFs, so genotype files
-and VCFs describe the same variants. The step 8 dataset exists inside the
-Cromwell run directory but is not collected.
+Note that `qc_dataset/` and `vcfs/` do **not** describe the same variant set.
+`qc_dataset/` is the dataset before check-bim harmonisation, the VCFs are generated after check-bim harmonisation at step 13 and carry fewer variants.
+`reports/final_variants_per_chr.txt` records the per-chromosome counts of the
+harmonised set, and `reports/check-bim.log` accounts for the difference.
 
 **Key files:**
 
 | File | Description |
 |------|-------------|
-| `reports/*_sample_qc_status.tsv` | **Start here.** One row per participant: FID, IID, ancestry, ancestry_prob, related, PC1..PCn. Subset the cohort and pull covariates from this one file. |
-| `qc_dataset/*_combined.bed/bim/fam` | Harmonised genotypes, all chromosomes, PLINK 1. |
+| `reports/*_sample_qc_status.tsv` | **Start here.** One row per participant: FID, IID, ancestry, ancestry_prob, related, PC1..PCn. Subset the cohort and pull covariates from this file. |
+| `qc_dataset/*_combined.bed/bim/fam` | QC-passed genotypes, all chromosomes, PLINK 1. Not reference-panel filtered. |
 | `qc_dataset/*.pgen/pvar/psam` | The same data in PLINK 2 format. |
 | `vcfs/chr*.vcf.gz` | Per-chromosome VCFs for imputation servers. |
 | `pca/*_covariate_pca_covariates.tsv` | Whole-cohort covariate PCs (`FID IID PC1..PCn`), axes from unrelated samples, all samples projected. |
@@ -501,10 +498,15 @@ by `ALLELE_CT`, so the formula is correct for any genotyping coverage.
 
 | Filter | Applied to | Why |
 |--------|-----------|-----|
-| MAC | Full cohort | Rarity is a global property |
+| MAC | Full cohort | Rarity is a property of the entire cohort |
 | HWE | Detected within `test_populations`, removed from full cohort | Avoids false violations from stratification in admixed samples |
 | Heterozygosity | Detected and removed within `test_populations` only | Preserves samples from untested populations |
 | Relatedness | Flagged on full cohort | User decides which samples to exclude |
+
+### Subset of unrelated single-ancestry samples
+
+The pipeline produces a ready-made subset of unrelated samples from a superpopulation, including their own within-subset covariate PCs. The subset is defined by the `subset_population` parameter, which defaults to `"EUR"`. This is to produce a clean dataset for association testing in a single population, which is a common use case. The subset is produced automatically to save users the trouble of filtering the combined QC dataset themselves.
+
 
 ---
 

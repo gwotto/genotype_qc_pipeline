@@ -33,7 +33,7 @@ This downloads:
 
 You also need a 1000 Genomes Phase 3 reference panel in PLINK binary
 format (hg19, biallelic SNPs only) with an accompanying `.psam` file
-containing a `SuperPop` column (`EUR`, `AFR`, `EAS`, `SAS`, `AMR`). These can be 
+containing a `SuperPop` column (`EUR`, `AFR`, `EAS`, `SAS`, `AMR`). This can be 
 obtained from https://www.cog-genomics.org/plink/2.0/resources#1kg_phase3
 
 ### 3. Configure
@@ -56,7 +56,7 @@ See `doc/pipeline.md` for the complete parameter reference.
 ### 4. Run
 
 ```bash
-java -jar cromwell-92.jar run src/genotype_qc_preimputation.wdl \
+java -jar cromwell-<version>.jar run src/genotype_qc_preimputation.wdl \
      -i config/genotype_qc_preimputation_inputs.json
 ```
 
@@ -107,10 +107,10 @@ Outputs land in `results/qc_dataset/` (final PLINK files),
 | 7 | LD pruning + heterozygosity outlier removal (within ancestry subset) |
 | 8 | Restrict to selected chromosomes |
 | 9 | Relatedness check (KING; samples flagged, not removed) |
-| 10 | Harmonise with HRC/TOPMed; produce per-chromosome VCFs |
-| 11 | BED and PLINK 2 copy of the combined dataset |
-| 12 | Within-cohort covariate PCA on the combined dataset |
-| 13 | Unrelated single-ancestry subset |
+| 10 | Combined QC dataset: BED and PLINK 2 copy |
+| 11 | Within-cohort covariate PCA on the combined dataset |
+| 12 | Unrelated single-ancestry subset |
+| 13 | Harmonise with HRC/TOPMed; produce per-chromosome VCFs |
 
 ---
 
@@ -118,7 +118,7 @@ Outputs land in `results/qc_dataset/` (final PLINK files),
 
 | File | Description |
 |------|-------------|
-| `results/qc_dataset/` | Final QC'd genotype data in bed and Plink 2 format |
+| `results/qc_dataset/` | Final QC'd genotype data in bed and Plink 2 format. Built before the imputation prep, so it keeps the full QC variant set |
 | `results/reports/*_sample_qc_status.tsv` | reference for filtering e.g. on ancestry and relatednes |
 | `results/pca/*_covariate_pca_covariates.tsv` | Plink format PCA covariates of the QC'ed dataset |
 | `results/subset/` | Final QC'd genotype data, subset of unrelated EUR samples | 
@@ -140,8 +140,10 @@ Outputs land in `results/qc_dataset/` (final PLINK files),
 
 ## Version history
 
+- v2026-08.3 (2026-08-26) — Reordered workflow, output PLINK files are not harmonised with HRC/TopMed.
 - v2026-08.2 (2026-08-02) — Documentation updates.
 - v2026-08.1 (2026-08-01) — End-to-end WDL workflow for genotype QC pre-imputation.
+  
 ## License
 
 BSD 3-Clause. See [LICENSE](LICENSE).

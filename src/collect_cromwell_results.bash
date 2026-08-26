@@ -14,13 +14,14 @@
 #
 # Output structure:
 #   <output_dir>/genotype_qc_preimputation_YYYY-MM-DD/
-#     qc_dataset/   Combined imputation-ready dataset: PLINK 1 (bed/bim/fam)
-#                   and PLINK 2 (pgen/pvar/psam)
+#     qc_dataset/   Combined QC-passed dataset (full QC variant set, not
+#                   reference-panel filtered): PLINK 1 (bed/bim/fam) and
+#                   PLINK 2 (pgen/pvar/psam)
 #     plots/        PNG plots (MAC, heterozygosity, PCA)
 #     reports/      QC reports (sex check, het, relatedness, freq, logs,
 #                   ancestry, sample QC status table)
 #     pca/          Ancestry + covariate PCA eigenvectors/eigenvalues, PC covariates
-#     vcfs/         Imputation-ready VCFs per chromosome
+#     vcfs/         Imputation-ready VCFs per chromosome, reference-panel filtered.
 #     subset/       Unrelated single-ancestry subset: PLINK 1 (bed/bim/fam),
 #                   PLINK 2 (pgen/pvar/psam), within-subset PC covariates
 #
@@ -61,18 +62,18 @@ echo "Copying pipeline log..."
 CALL="$BASE/call-WriteLog/execution"
 cp "$CALL"/*_pipeline.log "$OUTDIR/"
 
-# -- Final imputation-ready dataset (combined across chromosomes) -------------
-# The combined bed/bim/fam produced by PrepareForImputation is the PLINK
-# equivalent of the per-chromosome imputation VCFs (post strand-fix, post
-# HRC-panel filtering). Relatedness samples are flagged but NOT removed.
-echo "Copying combined imputation-ready dataset (PLINK 1 bed/bim/fam)..."
-CALL="$BASE/call-PrepareForImputation/execution"
+# -- Combined QC-passed dataset (all chromosomes, step 10) --------------------
+# The combined bed/bim/fam is the full QC-passed variant set: it is built
+# before the imputation prep, so it is NOT filtered against the HRC/TOPMed
+# reference panel. Relatedness samples are flagged but NOT removed.
+echo "Copying combined QC dataset (PLINK 1 bed/bim/fam)..."
+CALL="$BASE/call-CombinedDataset/execution"
 if [ -d "$CALL" ]; then
     cp "$CALL"/*_combined.bed "$CALL"/*_combined.bim "$CALL"/*_combined.fam "$OUTDIR/qc_dataset/"
 fi
 
 # -- Same dataset in PLINK 2 format (pgen/pvar/psam) --------------------------
-echo "Copying combined imputation-ready dataset (PLINK 2 pgen/pvar/psam)..."
+echo "Copying combined QC dataset (PLINK 2 pgen/pvar/psam)..."
 CALL="$BASE/call-CombinedToPlink2/execution"
 if [ -d "$CALL" ]; then
     cp "$CALL"/*.pgen "$CALL"/*.pvar "$CALL"/*.psam "$OUTDIR/qc_dataset/"
@@ -95,7 +96,7 @@ CALL="$BASE/call-RemoveSexFails/execution"
 CALL="$BASE/call-InitialVariantsPerChromosome/execution"
 [ -d "$CALL" ] && cp "$CALL"/variants_per_chr_report.txt "$OUTDIR/reports/initial_variants_per_chr.txt" 2>/dev/null || true
 
-# -- MAC plot & frequency files (step 2 - MacFilterSubset) --------------------------
+# -- MAC plot & frequency files (step 5 - MacFilter) --------------------------
 echo "Copying MAC plots and frequency files..."
 CALL="$BASE/call-MacFilter/execution"
 cp "$CALL"/*.png "$OUTDIR/plots/"
@@ -138,7 +139,7 @@ if [ -d "$CALL" ]; then
     done
 fi
 
-# -- Within-cohort covariate PCs (step 12 - CovariatePCA) ---------------------
+# -- Within-cohort covariate PCs (step 11 - CovariatePCA) ---------------------
 # PC1..PCn covariates for association testing: axes estimated on unrelated
 # samples and projected onto all samples.
 echo "Copying covariate PCs..."
@@ -162,7 +163,7 @@ if [ -d "$CALL" ]; then
 fi
 
 
-# -- Unrelated single-ancestry subset (step 13) ------------------------------
+# -- Unrelated single-ancestry subset (step 12) ------------------------------
 # PLINK 1 (bed/bim/fam) + PLINK 2 (pgen/pvar/psam) genotypes and within-subset
 # covariate PCs.
 echo "Copying unrelated-ancestry subset (PLINK 1 + PLINK 2)..."
@@ -181,7 +182,11 @@ if [ -d "$CALL" ]; then
     cp "$CALL"/*.eigenval       "$OUTDIR/subset/" 2>/dev/null || true
 fi
 
-# -- Imputation VCFs (step 10 - PrepareForImputation) -------------------------
+# -- Imputation VCFs (step 13 - PrepareForImputation) -------------------------
+# The VCFs are the pipeline's primary deliverable. They are this step's only
+# genotype output: the per-chromosome harmonised filesets are not merged back
+# into a combined bed/bim/fam, because the local analysis dataset is the step 10
+# one in qc_dataset/, which is not reference-panel filtered.
 echo "Copying imputation VCFs..."
 CALL="$BASE/call-PrepareForImputation/execution"
 cp "$CALL"/*_chr*.vcf.gz     "$OUTDIR/vcfs/"

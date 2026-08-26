@@ -72,16 +72,11 @@ flowchart TD
     PRUNEIN2 --> REL
     REL --> RELLIST["Related-sample list<br/>king_cutoff_out"]
 
-    %% ================= Imputation prep and deliverables (steps 10-13) =================
-    CHR --> PREP["Step 10 PrepareForImputation<br/>HRC-1000G-check-bim.pl strand/ref-alt harmonisation<br/>writes per-chromosome files, then merges them"]
-    HRC["HRC reference site frequencies"] --> PREP
-    PREP --> VCF["Per-chromosome VCFs<br/>chr*.vcf.gz + .tbi, imputation-ready"]
-    PREP --> COMB["Combined harmonised dataset<br/>bed/bim/fam across all chromosomes"]
+    %% ================= Analysis deliverables (steps 10-12) =================
+    CHR --> COMB["Step 10 CombinedDataset<br/>--make-bed copy of QC8, no filters<br/>bed/bim/fam across all chromosomes"]
+    COMB --> P2["Step 10 ConvertToPlink2 as CombinedToPlink2<br/>pgen/pvar/psam"]
 
-    COMB --> VPC2["Step 10a PostImputationVariantsPerChromosome<br/>report only"]
-    COMB --> P2["Step 11 ConvertToPlink2 as CombinedToPlink2<br/>pgen/pvar/psam"]
-
-    COMB --> COV["Step 12 CovariatePCA<br/>axes on unrelated samples, ALL samples projected<br/>n_covariate_pcs PCs"]
+    COMB --> COV["Step 11 CovariatePCA<br/>axes on unrelated samples, ALL samples projected<br/>n_covariate_pcs PCs"]
     RELLIST --> COV
     COV --> COVOUT["Covariate PCs<br/>FID IID PC1..PCn"]
 
@@ -89,11 +84,17 @@ flowchart TD
     RELLIST --> TABLE
     COVOUT --> TABLE
 
-    COMB --> SUB["Step 13 SubsetUnrelatedPopulation<br/>subset_population samples that are NOT KING-flagged<br/>bed/bim/fam"]
+    COMB --> SUB["Step 12 SubsetUnrelatedPopulation<br/>subset_population samples that are NOT KING-flagged<br/>bed/bim/fam"]
     ANC --> SUB
     RELLIST --> SUB
     SUB --> SUBP2["ConvertToPlink2 as SubsetToPlink2<br/>pgen/pvar/psam"]
     SUB --> SUBCOV["CovariatePCA as SubsetCovariatePCA<br/>PCs recomputed WITHIN the subset"]
+
+    %% ================= Imputation prep, primary deliverable (step 13) =================
+    CHR --> PREP["Step 13 PrepareForImputation<br/>HRC-1000G-check-bim.pl strand/ref-alt harmonisation<br/>per-chromosome files only, never merged back into a combined set"]
+    HRC["HRC reference site frequencies"] --> PREP
+    PREP --> VCF["Per-chromosome VCFs<br/>chr*.vcf.gz + .tbi, imputation-ready"]
+    PREP --> VPC2["Step 13a PostImputationVariantsPerChromosome<br/>report only, from the concatenated per-chr bims"]
 
     %% ================= Styling =================
     classDef input fill:#e1f5ff,stroke:#0277bd,color:#000

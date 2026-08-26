@@ -201,11 +201,11 @@ ROUTES <- list(
   "pca|_covariates\\.tsv$"                       = R_("CovariatePCA"),
   "pca|_covariate_pca\\.eigenval$"               = R_("CovariatePCA", "\\.eigenval$"),
 
-  ## PrepareForImputation also holds the per-chromosome *-updated-chr* filesets,
-  ## so the combined dataset has to be matched explicitly.
-  "qc_dataset|\\.bed$"                           = R_("PrepareForImputation", "_combined\\.bed$"),
-  "qc_dataset|\\.bim$"                           = R_("PrepareForImputation", "_combined\\.bim$"),
-  "qc_dataset|\\.fam$"                           = R_("PrepareForImputation", "_combined\\.fam$"),
+  ## The exported dataset is the step 10 combined fileset (built before the
+  ## imputation prep, so it carries the full QC variant set).
+  "qc_dataset|\\.bed$"                           = R_("CombinedDataset", "_combined\\.bed$"),
+  "qc_dataset|\\.bim$"                           = R_("CombinedDataset", "_combined\\.bim$"),
+  "qc_dataset|\\.fam$"                           = R_("CombinedDataset", "_combined\\.fam$"),
   "qc_dataset|\\.pgen$"                          = R_("CombinedToPlink2"),
   "qc_dataset|\\.pvar$"                          = R_("CombinedToPlink2"),
   "qc_dataset|\\.psam$"                          = R_("CombinedToPlink2"),
@@ -237,7 +237,7 @@ SUBDIR_TASKS <- list(
                    "RelatednessCheck", "AncestryPCA", "CreateQCStatusTable",
                    "PrepareForImputation", "PostImputationVariantsPerChromosome"),
   "pca"        = c("AncestryPCA", "CovariatePCA"),
-  "qc_dataset" = c("PrepareForImputation", "CombinedToPlink2"),
+  "qc_dataset" = c("CombinedDataset", "CombinedToPlink2"),
   "vcfs"       = "PrepareForImputation",
   "subset"     = c("SubsetUnrelated", "SubsetToPlink2", "SubsetCovariatePCA")
 )
@@ -369,9 +369,11 @@ first_step <- if (nrow(step_counts)) slice(step_counts, 1) else NULL
 ## last step: last line in the output log, might not be what want
 # last_step  <- if (nrow(step_counts)) slice(step_counts, n()) else NULL
 
-## define last step by step number, rather than the last line in the output log
+## Define the last step by step number, not by the last line in the log: the
+## log ends with the imputation-prep branch (step 13), whose reduced variant
+## count is not the deliverable. Step 10 is the combined QC dataset.
 last_step <- step_counts |>
-  filter(str_detect(step, regex("^Step 1[01]\\b"))) |>
+  filter(str_detect(step, regex("^Step 10\\b"))) |>
   slice_tail(n = 1)
 if (nrow(last_step) == 0) last_step <- if (nrow(step_counts)) slice(step_counts, n()) else NULL
 
@@ -1049,11 +1051,12 @@ if (!is.na(d8)) {
     cat("The step 8 fileset itself is here — ", n_fmt(nlines(b8[1])), " variants × ",
         n_fmt(nlines(f8[1])), " samples in `", rel(sub("\\.bim$", "", b8[1])),
         ".{bed,bim,fam}`.\n\n", sep = "")
-    note(paste("`collect_cromwell_results.bash` deliberately does **not** copy this",
-               "fileset out. What it puts in `qc_dataset/` is the step 10 harmonised",
-               "dataset, so that the PLINK files and the imputation VCFs describe",
-               "exactly the same variants. Use the step 8 data only if you",
-               "specifically want the pre-harmonisation genotypes."))
+    note(paste("`collect_cromwell_results.bash` does not copy this fileset out",
+               "under its own name. What it puts in `qc_dataset/` is the step 10",
+               "`*_combined` copy of it — the same variants and samples, renamed",
+               "for a consistent file stem across the PLINK 1 and PLINK 2",
+               "exports. The reference-panel harmonisation (step 13) happens",
+               "downstream of both and does not touch them."))
   }
 }
 ```
@@ -1134,152 +1137,14 @@ if (!is.null(gtab) && "PI_HAT" %in% names(gtab) && nrow(gtab) > 0) {
 # }
 ```
 
-# Imputation preparation (step 10)
+# Combined QC dataset (step 10)
 
-Will Rayner's `HRC-1000G-check-bim.pl` harmonises the QC dataset against the
-imputation reference panel: it fixes strand flips, aligns ref/alt, and drops
-variants the panel cannot accept — sites absent from the panel, palindromic
-A/T and C/G SNPs that cannot be strand-resolved, allele mismatches, and
-variants whose frequency differs from the reference by more than 0.2.
-
-The step emits one VCF per chromosome for upload **and** merges the harmonised
-per-chromosome filesets back into a single `bed/bim/fam`. That combined file is
-the PLINK equivalent of the VCFs — same variants, same alleles — which is what
-makes the two deliverables directly comparable.
-
-```{r checkbim}
-#| results: asis
-
-cb <- pick("reports", "check-bim\\.log$")
-if (have(cb)) {
-  txt <- read_lines(cb, progress = FALSE)
-  m <- str_match(txt, "^\\s*([A-Za-z][^/]*?)\\s+(\\d+)\\s*$")
-  ok <- !is.na(m[, 1]) & nchar(str_trim(m[, 2])) > 3
-  if (any(ok)) {
-    show_table(
-      tibble(Check = str_trim(m[ok, 2]), Variants = as.integer(m[ok, 3])),
-      caption = paste0("Counts parsed from ", rel(cb), ".")
-    )
-  }
-  collapsible("check-bim.log (full)", txt)
-} else {
-  absent("No `check-bim.log` under `call-PrepareForImputation/`.")
-}
-
-## The exclusion lists check-bim writes live only in the run directory.
-dpi <- exec_dir("PrepareForImputation")
-if (!is.na(dpi)) {
-  lists <- list.files(dpi, full.names = TRUE,
-                      pattern = "^(Exclude|Strand-Flip|Force-Allele1|Position|Chromosome|ID)-.*\\.txt$")
-  if (length(lists)) {
-    li <- tibble(File = basename(lists),
-                 Variants = vapply(lists, nlines, integer(1))) |> arrange(File)
-    show_table(li, caption = paste0(
-      "Per-action variant lists written by check-bim in `", rel(dpi),
-      "`. These are not copied out by `collect_cromwell_results.bash`."))
-  }
-}
-```
-
-## Variants per chromosome in the imputation-ready data
-
-```{r varchr-final}
-#| results: asis
-#| fig-height: 3.8
-
-vc_fin <- read_varchr(pick("reports", "final_variants_per_chr\\.txt$"))
-if (is.null(vc_fin)) {
-  absent("No `variants_per_chr_report.txt` under `call-PostImputationVariantsPerChromosome/`.")
-} else {
-  cat("These counts match the VCFs variant-for-variant. Source file: ",
-      fref(pick("reports", "final_variants_per_chr\\.txt$")), "\n\n", sep = "")
-}
-```
-
-```{r varchr-final-plot}
-#| fig-height: 3.8
-
-if (!is.null(vc_fin)) {
-  if (!is.null(vc_init)) {
-    cmp <- bind_rows(
-      vc_init |> mutate(stage = "Entering QC"),
-      vc_fin  |> mutate(stage = "Imputation-ready")
-    ) |>
-      mutate(stage = factor(stage, levels = c("Entering QC", "Imputation-ready")),
-             chr_label = factor(chr_label, levels = unique(vc_init$chr_label)))
-
-    ggplot(cmp, aes(x = chr_label, y = variants, fill = stage)) +
-      geom_col(position = position_dodge(width = 0.78), width = 0.68) +
-      scale_fill_manual(values = unname(PAL[c("blue", "orange")])) +
-      scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.1))) +
-      labs(title = "Variants per chromosome, before QC and after imputation prep",
-           subtitle = "The gap is what missingness, MAC, HWE and panel harmonisation removed",
-           x = "Chromosome", y = "Variants")
-  } else {
-    ggplot(vc_fin, aes(x = factor(chr_label, levels = chr_label), y = variants)) +
-      geom_col(fill = PAL[["blue"]], width = 0.72) +
-      scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.1))) +
-      labs(title = "Variants per chromosome in the imputation-ready data",
-           x = "Chromosome", y = "Variants")
-  }
-}
-```
-
-```{r varchr-final-table}
-#| results: asis
-
-if (!is.null(vc_fin)) {
-  tab <- vc_fin |> select(Chromosome = chr_label, `Imputation-ready` = variants)
-  if (!is.null(vc_init)) {
-    tab <- vc_init |>
-      select(Chromosome = chr_label, `Entering QC` = variants) |>
-      full_join(tab, by = "Chromosome") |>
-      mutate(Removed = `Entering QC` - `Imputation-ready`,
-             `Retained` = p_fmt(`Imputation-ready` / `Entering QC`))
-  }
-  show_table(tab, caption = "Per-chromosome variant counts.")
-}
-```
-
-## Imputation VCFs
-
-```{r vcfs}
-#| results: asis
-
-vcf_files <- picks("vcfs", "\\.vcf\\.gz$")
-tbi_files <- picks("vcfs", "\\.vcf\\.gz\\.tbi$")
-
-if (length(vcf_files) == 0) {
-  absent("No VCFs under `call-PrepareForImputation/` — the imputation deliverable is missing.")
-} else {
-  vi <- tibble(File = basename(vcf_files), Bytes = file.info(vcf_files)$size) |>
-    mutate(chr = as.integer(str_match(File, "chr(\\d+)\\.vcf\\.gz$")[, 2]),
-           Size = hsize(Bytes),
-           Index = ifelse(paste0(File, ".tbi") %in% basename(tbi_files), "yes", "MISSING")) |>
-    arrange(chr) |>
-    select(File, Size, `Tabix index` = Index)
-  show_table(vi, caption = sprintf(
-    "Imputation-ready VCFs in `%s` (%d files, %s total).",
-    rel(dirname(vcf_files[1])), length(vcf_files),
-    hsize(sum(file.info(vcf_files)$size))))
-
-  if (any(vi$`Tabix index` == "MISSING")) {
-    absent("One or more VCFs have no `.tbi` index — imputation servers will reject them.")
-  } else {
-    note(paste("Upload these to the imputation server (HRC or TOPMed, matching the",
-               "panel the run was harmonised against). Run",
-               "`collect_cromwell_results.bash` to gather them into a `vcfs/`",
-               "directory first — the run directory also holds a duplicate copy of",
-               "each VCF under `execution/glob-*/`."))
-  }
-}
-```
-
-# Combined imputation-ready dataset (step 11)
-
-The same harmonised data in PLINK form, in both PLINK 1 and PLINK 2 encodings.
-Use these for any analysis you want to run on the pre-imputation genotypes;
-they are variant-for-variant identical to the uploaded VCFs.
+The QC-passed genotypes for all selected chromosomes, in both PLINK 1 and
+PLINK 2 encodings. This is the step 8 variant set, written out before the
+imputation prep runs, so nothing here has been dropped by the harmonisation
+against the reference panel — it carries **more** variants than the uploaded
+VCFs. Use these for any analysis on the pre-imputation genotypes; the covariate
+PCs (step 11) and the ancestry subset (step 12) are both built on this dataset.
 
 ```{r combined}
 #| results: asis
@@ -1292,7 +1157,7 @@ pvar <- pick("qc_dataset", "\\.pvar$")
 psam <- pick("qc_dataset", "\\.psam$")
 
 if (!have(bim) && !have(pgen)) {
-  absent("No combined dataset under `call-PrepareForImputation/` or `call-CombinedToPlink2/`.")
+  absent("No combined dataset under `call-CombinedDataset/` or `call-CombinedToPlink2/`.")
 } else {
   rows <- list()
   if (have(bim)) rows[[length(rows) + 1]] <-
@@ -1306,11 +1171,11 @@ if (!have(bim) && !have(pgen)) {
            Samples = n_fmt(max(0, nlines(psam) - 1)),
            Files = paste(sprintf("`%s`", basename(c(pgen, pvar, psam))), collapse = ", "))
   show_table(bind_rows(rows), caption = paste0(
-    "The combined dataset, in `call-PrepareForImputation/` and `call-CombinedToPlink2/`."))
+    "The combined dataset, in `call-CombinedDataset/` and `call-CombinedToPlink2/`."))
 }
 ```
 
-# Covariate PCs (step 12)
+# Covariate PCs (step 11)
 
 Within-cohort principal components for use as association covariates. The axes
 are estimated on the KING-unrelated samples — relatives would otherwise pull
@@ -1463,9 +1328,9 @@ if (is.null(qc_tbl)) {
 }
 ```
 
-# Unrelated single-ancestry subset (step 13)
+# Unrelated single-ancestry subset (step 12)
 
-An additional deliverable: the imputation-ready data restricted to samples of
+Data restricted to samples of
 one superpopulation that are not KING-flagged as related, with covariate PCs
 recomputed **inside** the subset. Whole-cohort PCs largely capture
 between-ancestry structure, which is not the axis you want to adjust for in a
@@ -1511,7 +1376,7 @@ if (!have(s_bim) && !have(s_keep)) {
              File = rel(s_cov))
   }
   show_table(bind_rows(rows), align = c("l", "r", "l"),
-             caption = "Step 13 outputs, across the three tasks that build the subset.")
+             caption = "Step 12 outputs, across the three tasks that build the subset.")
 }
 ```
 
@@ -1538,6 +1403,156 @@ if (have(s_ev)) {
 }
 ```
 
+# Imputation preparation (step 13)
+
+Will Rayner's `HRC-1000G-check-bim.pl` harmonises the QC dataset against the
+imputation reference panel: it fixes strand flips, aligns ref/alt, and drops
+variants the panel cannot accept — sites absent from the panel, palindromic
+A/T and C/G SNPs that cannot be strand-resolved, allele mismatches, and
+variants whose frequency differs from the reference by more than 0.2.
+
+This produces the pipeline's primary deliverable — one VCF per chromosome,
+ready to upload. It reads the step 8 dataset directly rather than the step 10
+one, and is ordered last, so that the variants it drops are still present in the
+combined QC dataset (step 10), the covariate PCs (step 11) and the ancestry
+subset (step 12): the panel dictates what the imputation server will accept, not
+what a local analysis should be restricted to.
+
+The VCFs are also this step's only genotype output. The harmonised
+per-chromosome filesets are deliberately **not** merged back into a combined
+`bed/bim/fam`. Their bim files are concatenated into a variant manifest (no
+genotypes) purely to report the per-chromosome counts below, which equal the VCF
+record counts because `Run-plink.sh` writes each chromosome's bim and VCF from
+the same fileset.
+
+```{r checkbim}
+#| results: asis
+
+cb <- pick("reports", "check-bim\\.log$")
+if (have(cb)) {
+  txt <- read_lines(cb, progress = FALSE)
+  m <- str_match(txt, "^\\s*([A-Za-z][^/]*?)\\s+(\\d+)\\s*$")
+  ok <- !is.na(m[, 1]) & nchar(str_trim(m[, 2])) > 3
+  if (any(ok)) {
+    show_table(
+      tibble(Check = str_trim(m[ok, 2]), Variants = as.integer(m[ok, 3])),
+      caption = paste0("Counts parsed from ", rel(cb), ".")
+    )
+  }
+  collapsible("check-bim.log (full)", txt)
+} else {
+  absent("No `check-bim.log` under `call-PrepareForImputation/`.")
+}
+
+## The exclusion lists check-bim writes live only in the run directory.
+dpi <- exec_dir("PrepareForImputation")
+if (!is.na(dpi)) {
+  lists <- list.files(dpi, full.names = TRUE,
+                      pattern = "^(Exclude|Strand-Flip|Force-Allele1|Position|Chromosome|ID)-.*\\.txt$")
+  if (length(lists)) {
+    li <- tibble(File = basename(lists),
+                 Variants = vapply(lists, nlines, integer(1))) |> arrange(File)
+    show_table(li, caption = paste0(
+      "Per-action variant lists written by check-bim in `", rel(dpi),
+      "`. These are not copied out by `collect_cromwell_results.bash`."))
+  }
+}
+```
+
+## Variants per chromosome in the imputation-ready data
+
+```{r varchr-final}
+#| results: asis
+#| fig-height: 3.8
+
+vc_fin <- read_varchr(pick("reports", "final_variants_per_chr\\.txt$"))
+if (is.null(vc_fin)) {
+  absent("No `variants_per_chr_report.txt` under `call-PostImputationVariantsPerChromosome/`.")
+} else {
+  cat("These counts match the VCFs variant-for-variant. Source file: ",
+      fref(pick("reports", "final_variants_per_chr\\.txt$")), "\n\n", sep = "")
+}
+```
+
+```{r varchr-final-plot}
+#| fig-height: 3.8
+
+if (!is.null(vc_fin)) {
+  if (!is.null(vc_init)) {
+    cmp <- bind_rows(
+      vc_init |> mutate(stage = "Entering QC"),
+      vc_fin  |> mutate(stage = "Imputation-ready")
+    ) |>
+      mutate(stage = factor(stage, levels = c("Entering QC", "Imputation-ready")),
+             chr_label = factor(chr_label, levels = unique(vc_init$chr_label)))
+
+    ggplot(cmp, aes(x = chr_label, y = variants, fill = stage)) +
+      geom_col(position = position_dodge(width = 0.78), width = 0.68) +
+      scale_fill_manual(values = unname(PAL[c("blue", "orange")])) +
+      scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.1))) +
+      labs(title = "Variants per chromosome, before QC and after imputation prep",
+           subtitle = "The gap is what missingness, MAC, HWE and panel harmonisation removed",
+           x = "Chromosome", y = "Variants")
+  } else {
+    ggplot(vc_fin, aes(x = factor(chr_label, levels = chr_label), y = variants)) +
+      geom_col(fill = PAL[["blue"]], width = 0.72) +
+      scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.1))) +
+      labs(title = "Variants per chromosome in the imputation-ready data",
+           x = "Chromosome", y = "Variants")
+  }
+}
+```
+
+```{r varchr-final-table}
+#| results: asis
+
+if (!is.null(vc_fin)) {
+  tab <- vc_fin |> select(Chromosome = chr_label, `Imputation-ready` = variants)
+  if (!is.null(vc_init)) {
+    tab <- vc_init |>
+      select(Chromosome = chr_label, `Entering QC` = variants) |>
+      full_join(tab, by = "Chromosome") |>
+      mutate(Removed = `Entering QC` - `Imputation-ready`,
+             `Retained` = p_fmt(`Imputation-ready` / `Entering QC`))
+  }
+  show_table(tab, caption = "Per-chromosome variant counts.")
+}
+```
+
+## Imputation VCFs
+
+```{r vcfs}
+#| results: asis
+
+vcf_files <- picks("vcfs", "\\.vcf\\.gz$")
+tbi_files <- picks("vcfs", "\\.vcf\\.gz\\.tbi$")
+
+if (length(vcf_files) == 0) {
+  absent("No VCFs under `call-PrepareForImputation/` — the imputation deliverable is missing.")
+} else {
+  vi <- tibble(File = basename(vcf_files), Bytes = file.info(vcf_files)$size) |>
+    mutate(chr = as.integer(str_match(File, "chr(\\d+)\\.vcf\\.gz$")[, 2]),
+           Size = hsize(Bytes),
+           Index = ifelse(paste0(File, ".tbi") %in% basename(tbi_files), "yes", "MISSING")) |>
+    arrange(chr) |>
+    select(File, Size, `Tabix index` = Index)
+  show_table(vi, caption = sprintf(
+    "Imputation-ready VCFs in `%s` (%d files, %s total).",
+    rel(dirname(vcf_files[1])), length(vcf_files),
+    hsize(sum(file.info(vcf_files)$size))))
+
+  if (any(vi$`Tabix index` == "MISSING")) {
+    absent("One or more VCFs have no `.tbi` index — imputation servers will reject them.")
+  } else {
+    note(paste("Upload these to the imputation server (HRC or TOPMed, matching the",
+               "panel the run was harmonised against). Run",
+               "`collect_cromwell_results.bash` to gather them into a `vcfs/`",
+               "directory first — the run directory also holds a duplicate copy of",
+               "each VCF under `execution/glob-*/`."))
+  }
+}
+```
+
 # What to use for what
 
 ```{r deliverables}
@@ -1546,14 +1561,15 @@ if (have(s_ev)) {
 d <- tribble(
   ~Purpose, ~`Task directory (under the run directory)`,
   "Upload to the imputation server (HRC / TOPMed)", "`call-PrepareForImputation/execution/*_chr*.vcf.gz` + `.tbi`",
-  "Pre-imputation analysis in PLINK 1", "`call-PrepareForImputation/execution/*_combined.{bed,bim,fam}`",
+  "Pre-imputation analysis in PLINK 1", "`call-CombinedDataset/execution/*_combined.{bed,bim,fam}`",
   "Pre-imputation analysis in PLINK 2", "`call-CombinedToPlink2/execution/*.{pgen,pvar,psam}`",
   "Association covariates for the whole cohort", "`call-CovariatePCA/execution/*_covariates.tsv`",
   "Subsetting the cohort by ancestry or relatedness", "`call-CreateQCStatusTable/execution/*_sample_qc_status.tsv`",
   "Dropping relatives from an analysis", "`call-RelatednessCheck/execution/plink2.king.cutoff.out.id` with PLINK `--remove`",
   "A ready-made unrelated single-ancestry analysis set", "`call-SubsetUnrelated/`, `call-SubsetToPlink2/`, `call-SubsetCovariatePCA/`",
   "Per-step counts for a methods section", "`call-WriteLog/execution/*_pipeline.log`",
-  "The pre-harmonisation step 8 dataset", "`call-ChromosomeFilter/execution/*_QC8.{bed,bim,fam}`"
+  "The harmonised per-chromosome sets behind the VCFs", "`call-PrepareForImputation/execution/*-updated-chr*.{bed,bim,fam}`",
+  "The step 8 dataset the combined set was copied from", "`call-ChromosomeFilter/execution/*_QC8.{bed,bim,fam}`"
 )
 show_table(d)
 
@@ -1564,7 +1580,7 @@ note(paste("Run `bash src/collect_cromwell_results.bash <run-dir> ./results` bef
            "result set."))
 
 note(paste("Related samples are **flagged, not removed**, everywhere except the",
-           "step 13 subset. If your analysis assumes unrelated individuals, apply",
+           "step 12 subset. If your analysis assumes unrelated individuals, apply",
            "`--remove` with the KING cutoff list yourself."))
 ```
 

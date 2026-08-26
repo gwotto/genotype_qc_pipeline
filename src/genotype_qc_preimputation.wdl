@@ -37,19 +37,25 @@ version 1.0
 ##   7b. Heterozygosity outlier removal (detection and removal within subset)
 ##   8.  Chromosome filter (configurable via chr_args) — FINAL QC DATASET
 ##   9.  Relatedness check (KING kinship; samples flagged, not removed)
-##   10. Prepare for imputation (HRC-1000G-check-bim.pl; per-chr VCFs)
+##   10. Combined QC dataset, PLINK 1 (bed/bim/fam) + PLINK 2 (pgen/pvar/psam)
+##   11. Within-cohort covariate PCA on the combined dataset
+##   12. Unrelated single-ancestry subset (+ PLINK 2 copy, within-subset PCA)
+##   13. Prepare for imputation (HRC-1000G-check-bim.pl; per-chr VCFs)
 ##
-## KEY DESIGN DECISIONS
-##   • Reference-only PCA: PC axes are defined by 1000G structure alone,
+## Key design decisions
+##   - Reference-only PCA: PC axes are defined by 1000G structure alone,
 ##     so they are stable regardless of study size or relatedness.
-##   • MAC: applied to full cohort (rarity is a global property).
-##   • HWE: detected within test_populations, removed from full cohort
+##   - MAC: applied to full cohort.
+##   - HWE: detected within test_populations, removed from full cohort
 ##     (prevents false violations in admixed samples).
-##   • Heterozygosity: detected and removed within subset only (preserves
+##   - Heterozygosity: detected and removed within subset only (preserves
 ##     samples from untested populations).
-##   • Relatedness: flagged on full cohort; user decides which pairs to break.
+##   - Relatedness: flagged on full cohort, not removed.
+##   - Two parallel deliverables, both off the step 8 QC dataset: 
+##     - The QC'ed genotypes, as a complete set and a selected subset, in PLINK 1.9 and PLINK 2 format, and with PCA covariates.
+##     - The QC'ed genotypes harmonised by check-bim in VCF format. 
 ##
-## CHROMOSOME ENCODING
+## Chromosome encoding
 ##   Uses PLINK chromosome encoding throughout:
 ##     Autosomes 1–22 | X = 23 | Y = 24 | PAR (XY) = 25 | MT = 26
 ##
@@ -68,12 +74,12 @@ version 1.0
 
 workflow genotype_qc_preimputation {
 
-     String pipeline_version = "v2026-08.2"
+     String pipeline_version = "v2026-08.3"
 
     input {
         # -- Input genotype files -------------------------------------------
-        # Provide EITHER binary format (bed + bim + fam)
-        # OR text format (ped + map). Binary is preferred.
+        # Provide either binary format (bed + bim + fam)
+        # OR text format (ped + map).
         File? bed_file   # PLINK binary genotype matrix
         File? bim_file   # PLINK SNP information file
         File? fam_file   # PLINK sample information file
@@ -94,18 +100,18 @@ workflow genotype_qc_preimputation {
         File create_qc_table_r # R sript: creates table of ancestry assignments and relatedness checks
     
         # -- Tool paths -----------------------------------------------------
-        # Change these if tools are not on $PATH
+        # Set in config file if tools are not on $PATH
         String plink_bin    # PLINK 1.9 binary
         String plink2_bin   # PLINK 2.0 binary (used for KING relatedness)
         String rscript_bin  # R interpreter
 
         # -- QC thresholds --------------------------------------------------
-        # Typical values shown; adjust for your study.
+        # Typical values shown, adjust in config file
         Float geno_threshold  # Max missing genotype rate per SNP    (e.g. 0.05 = 5%)
         Float mind_threshold  # Max missing genotype rate per sample (e.g. 0.05 = 5%)
         Float  hwe_pvalue      # Min HWE p-value to retain SNP        (e.g. 1e-6)
         Int    mac_threshold   # Min minor allele count to retain a SNP (e.g. 50)
-        Float ld_r2           # Max r² for LD pruning                (e.g. 0.2)
+        Float ld_r2           # Max r2 for LD pruning                (e.g. 0.2)
         Int   ld_window_kb    # Sliding window size in kb            (e.g. 50)
         Int   ld_step         # Window step size in SNPs             (e.g. 1)
         Float pihat_min       # Min pi-hat to flag related pairs     (e.g. 0.2)
@@ -120,14 +126,14 @@ workflow genotype_qc_preimputation {
         Float  ancestry_prob_threshold = 0.5  # Probability threshold for ancestry assignment (0.0-1.0)
 
         # Number of within-cohort principal components emitted as association
-        # covariates for the final (imputation-prepared) dataset. Computed on
+        # covariates for the final dataset. Computed on
         # unrelated samples and projected onto all samples.
         Int    n_covariate_pcs = 20
 
         # Additional deliverable: an unrelated single-ancestry subset of the
-        # imputation-ready dataset, exported in PLINK 1 and PLINK 2 formats with
-        # its own within-subset covariate PCs. Superpopulation label to select
-        # (must match AncestryPCA labels: EUR/AFR/EAS/SAS/AMR).
+        # dataset, exported in PLINK 1 and PLINK 2 formats with
+        # its own within-subset covariate PCs. Superpopulation selected
+        # by AncestryPCA labels: EUR/AFR/EAS/SAS/AMR.
         String subset_population = "EUR"
 
         # -- 1000 Genomes ancestry PCA --------------------------------------
@@ -194,7 +200,7 @@ workflow genotype_qc_preimputation {
         input:
             bim_file = HandleDuplicates.out_bim,
             fam_file = HandleDuplicates.out_fam,
-            label    = "Step 0b  Remove duplicate IDs"
+            label    = "Step 0b  Make duplicate IDs unique"
     }
 
     # -- Step 1: SNP missingness filter (--geno) ---------------------------
@@ -423,8 +429,7 @@ workflow genotype_qc_preimputation {
     }
 
     # --- Step 7a: LD pruning as a helper for the heterozygosity (step 7b) and
-    # relatedness (step 9) checks only — the LD SNPs are NOT removed from the
-    # dataset. High-LD regions are excluded, which suits both uses.
+    # relatedness (step 9). High-LD regions are excluded.
 
     call LdPruning as LdPruningHet {
         input:
@@ -507,9 +512,8 @@ workflow genotype_qc_preimputation {
     }
 
     # -- Step 8: Restrict to selected chromosomes -------------------------------------
-    # Retains only chromosomes 1–22 for downstream association analysis.
-    # Sex chromosomes and mitochondrial SNPs require separate handling.
-    # Chromosome filtering args are configurable (e.g. "--chr 1-23" or "--chr 1-10,12-22").
+    # Retains only selected chromosomes for downstream association analysis.
+    # Chromosome filtering args are configurable (e.g. "--chr 1-23", "--chr 1-10,12-22" or "--autosome").
     call PlinkFilter as ChromosomeFilter {
         input:
             bed_file      = MergeHetFiltered.out_bed,
@@ -532,7 +536,7 @@ workflow genotype_qc_preimputation {
     # MAC- and HWE-filtered variants rather than the raw call set. Reuses the
     # LD-pruned SNP list from step 7a (high-LD regions already excluded);
     # --extract simply intersects it with the variants remaining in QC8.
-    # Related samples are FLAGGED, never removed — users apply --remove in
+    # Related samples are FLAGGED, never removed — users can apply --remove in
     # downstream association tests. The flags feed steps 12 and 13 and the
     # sample QC status table.
     call RelatednessCheck {
@@ -555,57 +559,45 @@ workflow genotype_qc_preimputation {
             label    = "Step 9   Relatedness check              (related flagged, not removed)"
     }
 
-    # -- Step 10: Prepare for TOPMed imputation ----------------------------
-    # Aligns strand orientation to the HRC reference panel using Will
-    # Rayner's check-bim script. Removes SNPs not in the reference, ambiguous
-    # A/T and C/G SNPs that cannot be strand-resolved, and SNPs with large
-    # allele frequency differences vs the reference.
-    # Outputs per-chromosome VCF files ready for upload to the TOPMed
-    # imputation server (https://imputation.biodatacatalyst.nhlbi.nih.gov).
-    
-    call PrepareForImputation {
+    # -- Step 10: Combined QC-passed dataset (PLINK 1 + PLINK 2) -----------
+    # The local analysis dataset: the step 8/9 QC output, i.e. the full
+    # QC-passed variant set. It is built before the imputation
+    # prep (step 13), so its variants have not been dropped by the check-bim
+    # harmonisation against the reference panel — that harmonisation is
+    # required for the VCFs the imputation server accepts, but has no bearing
+    # on analyses run locally.
+    # This call is a plain --make-bed copy: it applies no filters, it only
+    # gives the exported dataset a consistent `_combined` file stem alongside
+    # the PLINK 2 conversion below.
+    call PlinkFilter as CombinedDataset {
         input:
-            bed_file        = ChromosomeFilter.out_bed,
-            bim_file        = ChromosomeFilter.out_bim,
-            fam_file        = ChromosomeFilter.out_fam,
-            check_bim_pl    = check_bim_pl,
-            hrc_ref_freq    = hrc_ref_freq,
-            output_prefix   = output_prefix + "_imputation",
-            plink_bin       = plink_bin,
-            perl_bin        = perl_bin,
-            bcftools_bin    = bcftools_bin,
-            bgzip_bin       = bgzip_bin,
-            tabix_bin       = tabix_bin
+            bed_file      = ChromosomeFilter.out_bed,
+            bim_file      = ChromosomeFilter.out_bim,
+            fam_file      = ChromosomeFilter.out_fam,
+            plink_args    = "",
+            output_prefix = output_prefix + "_combined",
+            plink_bin     = plink_bin
     }
 
-    # Report per-chromosome variant counts AFTER imputation prep (check-bim),
-    # i.e. on the harmonised variant set actually written to the VCFs.
-    call VariantsPerChromosome as PostImputationVariantsPerChromosome {
-        input:
-            bim_file = PrepareForImputation.combined_bim,
-            label    = "Step 10a Variants per chromosome (harmonised)"
-    }
-
-    # -- Step 11: PLINK 2 (pgen/pvar/psam) copy of the combined dataset ----
     call ConvertToPlink2 as CombinedToPlink2 {
         input:
-            bed_file      = PrepareForImputation.combined_bed,
-            bim_file      = PrepareForImputation.combined_bim,
-            fam_file      = PrepareForImputation.combined_fam,
-            output_prefix = output_prefix + "_imputation_combined",
-            label         = "Step 11  PLINK 2 conversion (combined)",
+            bed_file      = CombinedDataset.out_bed,
+            bim_file      = CombinedDataset.out_bim,
+            fam_file      = CombinedDataset.out_fam,
+            output_prefix = output_prefix + "_combined",
+            label         = "Step 10  Combined dataset (PLINK 1 + PLINK 2)",
             plink2_bin    = plink2_bin
     }
 
-    # -- Step 12: Within-cohort covariate PCA on the combined dataset ------
+    # -- Step 11: Within-cohort covariate PCA on the combined dataset ------
     # PCs are computed on unrelated samples (KING-flagged relatives excluded)
     # and projected onto all samples, giving association covariates for the
     # whole cohort on a common scale.
     call CovariatePCA {
         input:
-            bed_file      = PrepareForImputation.combined_bed,
-            bim_file      = PrepareForImputation.combined_bim,
-            fam_file      = PrepareForImputation.combined_fam,
+            bed_file      = CombinedDataset.out_bed,
+            bim_file      = CombinedDataset.out_bim,
+            fam_file      = CombinedDataset.out_fam,
             related_list  = RelatednessCheck.king_cutoff_out,
             ld_regions    = ld_regions,
             ld_window_kb  = ld_window_kb,
@@ -631,16 +623,16 @@ workflow genotype_qc_preimputation {
             create_qc_table_r    = create_qc_table_r
     }
 
-    # -- Step 13: Unrelated single-ancestry subset ---
+    # -- Step 12: Unrelated single-ancestry subset ---
     # Select samples assigned to `subset_population` that are NOT KING-flagged
     # as related, emit bed/bim/fam (in SubsetUnrelated) plus a PLINK 2 copy, and
     # compute covariate PCs *within* the subset (correct for within-population
     # association; the whole-cohort PCs mostly capture between-ancestry structure).
     call SubsetUnrelatedPopulation as SubsetUnrelated {
         input:
-            bed_file      = PrepareForImputation.combined_bed,
-            bim_file      = PrepareForImputation.combined_bim,
-            fam_file      = PrepareForImputation.combined_fam,
+            bed_file      = CombinedDataset.out_bed,
+            bim_file      = CombinedDataset.out_bim,
+            fam_file      = CombinedDataset.out_fam,
             assignments   = AncestryPCA.assignments,
             related_list  = RelatednessCheck.king_cutoff_out,
             population    = subset_population,
@@ -669,6 +661,7 @@ workflow genotype_qc_preimputation {
             ld_r2         = ld_r2,
             n_covariate_pcs         = n_covariate_pcs,
             output_prefix = output_prefix + "_unrelated_" + subset_population + "_pca",
+            label         = "Step 12a Covariate PCA (within subset)",
             plink_bin     = plink_bin,
             plink2_bin    = plink2_bin
     }
@@ -677,7 +670,36 @@ workflow genotype_qc_preimputation {
         input:
             bim_file = SubsetUnrelated.out_bim,
             fam_file = SubsetUnrelated.out_fam,
-            label    = "Step 13  Unrelated " + subset_population + " subset"
+            label    = "Step 12  Unrelated " + subset_population + " subset"
+    }
+
+    # -- Step 13: Prepare for TOPMed imputation ----------------------------
+    # Per-chromosome VCF files ready for upload to the TOPMed imputation server
+    # (https://imputation.biodatacatalyst.nhlbi.nih.gov).
+    # Aligns strand orientation to the HRC reference panel using Will
+    # Rayner's check-bim script. Removes SNPs not in the reference, ambiguous
+    # A/T and C/G SNPs that cannot be strand-resolved, and SNPs with large
+    # allele frequency differences vs the reference.
+    call PrepareForImputation {
+        input:
+            bed_file        = ChromosomeFilter.out_bed,
+            bim_file        = ChromosomeFilter.out_bim,
+            fam_file        = ChromosomeFilter.out_fam,
+            check_bim_pl    = check_bim_pl,
+            hrc_ref_freq    = hrc_ref_freq,
+            output_prefix   = output_prefix + "_imputation",
+            plink_bin       = plink_bin,
+            perl_bin        = perl_bin,
+            bgzip_bin       = bgzip_bin,
+            tabix_bin       = tabix_bin
+    }
+
+    # Report per-chromosome variant counts AFTER imputation prep (check-bim),
+    # i.e. on the harmonised variant set actually written to the VCFs.
+    call VariantsPerChromosome as PostImputationVariantsPerChromosome {
+        input:
+            bim_file = PrepareForImputation.harmonised_bim,
+            label    = "Step 13a Variants per chromosome (harmonised)"
     }
 
 
@@ -700,15 +722,13 @@ workflow genotype_qc_preimputation {
             LogStep7.line,
             LogStep8.line,
             LogStep9.line,
+            CombinedToPlink2.log_line,
+            CovariatePCA.log_line,
+            LogSubset.line,
             PrepareForImputation.log_line,
             PostImputationVariantsPerChromosome.log_line
         ],
-        PostImputationVariantsPerChromosome.log_lines,
-        [
-            CombinedToPlink2.log_line,
-            CovariatePCA.log_line,
-            LogSubset.line
-        ]
+        PostImputationVariantsPerChromosome.log_lines
     ])
 
     call WriteLog {
@@ -723,7 +743,7 @@ workflow genotype_qc_preimputation {
         # Pipeline run log — SNP/sample counts at each QC step
         File pipeline_log = WriteLog.log
 
-        # Final QC-passed dataset — use these for association testing
+        # Final QC-passed dataset, before harmonisation for imputation.
         File final_bed = ChromosomeFilter.out_bed
         File final_bim = ChromosomeFilter.out_bim
         File final_fam = ChromosomeFilter.out_fam
@@ -771,11 +791,12 @@ workflow genotype_qc_preimputation {
         Array[File] imputation_vcf_tbis = PrepareForImputation.vcf_tbi
         File        check_bim_log       = PrepareForImputation.check_bim_log
 
-        # Combined (all-chromosome) imputation-ready dataset — PLINK equivalent
-        # of the per-chromosome VCFs, in both PLINK 1 and PLINK 2 formats
-        File combined_bed  = PrepareForImputation.combined_bed
-        File combined_bim  = PrepareForImputation.combined_bim
-        File combined_fam  = PrepareForImputation.combined_fam
+        # Combined (all-chromosome) QC-passed dataset, in both PLINK 1 and
+        # PLINK 2 formats. Built before imputation prep, so it keeps the full
+        # QC variant set.
+        File combined_bed  = CombinedDataset.out_bed
+        File combined_bim  = CombinedDataset.out_bim
+        File combined_fam  = CombinedDataset.out_fam
         File combined_pgen = CombinedToPlink2.out_pgen
         File combined_pvar = CombinedToPlink2.out_pvar
         File combined_psam = CombinedToPlink2.out_psam
@@ -844,7 +865,7 @@ task ConvertToBinary {
     ## supplied comma-separated superpopulation list, or all samples if "ALL".
     ## - assignments: TSV produced by AncestryPCA with at least an IID and a
     ##   predicted superpopulation column (header names: superpop|predicted_pop|predicted)
-    ## - fam_file: study .fam to map IID → FID when assignments contain only IID
+    ## - fam_file: study .fam to map IID -> FID when assignments contain only IID
     ## -----------------------------------------------------------------------------
     task MakeAncestryKeepList {
         input {
@@ -1163,8 +1184,7 @@ task CountXSNPs {
 ## chromosome coding schemes.
 ##
 ## Output includes:
-##   - A formatted report of variants per chromosome (chromosomes with 0
-##     variants are omitted from the report)
+##   - A formatted report of variants per chromosome
 ##   - Separate counts for autosomes, sex chromosomes, and mitochondrial DNA
 ##   - A single-line summary for the pipeline log
 ##   - A multi-line breakdown for inclusion in the pipeline log
@@ -1334,7 +1354,7 @@ task SexCheck {
 ## Generates two SNP lists using PLINK --indep-pairwise:
 ##   prune.in  — approximately independent SNPs (used downstream)
 ##   prune.out — correlated SNPs removed from consideration
-## High-LD regions (e.g. MHC, chr8 inversion) are excluded before pruning
+## High-LD regions (e.g. MHC) are excluded before pruning
 ## to prevent these regions from dominating the independent SNP set.
 ## -----------------------------------------------------------------------------
 task LdPruning {
@@ -1345,7 +1365,7 @@ task LdPruning {
         File   ld_regions     # Genomic regions to exclude (4-col BED format)
         Int    ld_window_kb   # Sliding window size in kilobases
         Int    ld_step        # Step size in number of SNPs
-        Float  ld_r2          # r² threshold; SNP pairs above this are pruned
+        Float  ld_r2          # r2 threshold; SNP pairs above this are pruned
         String output_prefix
         String label = "LD pruning"   # Label for the pipeline log line
         String plink_bin
@@ -1375,7 +1395,7 @@ task LdPruning {
 ## -----------------------------------------------------------------------------
 ## HeterozygosityCheck
 ## Computes per-sample heterozygosity rates on LD-pruned SNPs, then flags
-## outliers using R scripts. Outlier threshold: mean ± 3 SD.
+## outliers using R scripts. Outlier threshold: mean +/- 3 SD.
 ##   R_check.het     — PLINK heterozygosity output
 ##   het_fail_ind.txt — FID IID of outlier samples
 ## -----------------------------------------------------------------------------
@@ -1386,7 +1406,7 @@ task HeterozygosityCheck {
         File   fam_file
         File   prune_in                  # LD-pruned SNP list from LdPruning
         File   check_heterozygosity_r    # Computes observed heterozygosity rates
-        File   heterozygosity_outliers_r # Flags samples outside mean ± 3 SD
+        File   heterozygosity_outliers_r # Flags samples outside mean +/- 3 SD
         String plink_bin
         String rscript_bin
     }
@@ -1543,10 +1563,11 @@ task MacFilter {
 ## Steps:
 ##   1. Restrict to autosomal SNPs (chr 1-22); intersect by rsID, filter to
 ##      positionally concordant SNPs, then intersect with LD-pruned list
-##   2. Merge study data with 1000G using the overlapping SNP list
+##   2. Get the intersect between study and reference SNPs.
 ##      - Strand flips are attempted automatically; unresolvable SNPs removed
-##   3. Run PCA on the merged dataset
-##   4. R script assigns superpopulation labels using a random forest trained
+##   3. Run PCA on the reference dataset.
+##   4. Project study samples on the axes of the reference PCA.
+##   5. R script assigns superpopulation labels using a random forest trained
 ##      on 1000G samples with known labels, and plots study samples overlaid
 ##      on 1000G reference clusters
 ##
@@ -1567,7 +1588,7 @@ task AncestryPCA {
         File   ld_regions           # High-LD regions to exclude during pruning
         Int    ld_window_kb         # Sliding window size in kb
         Int    ld_step              # Step size in SNPs
-        Float  ld_r2                # r² pruning threshold
+        Float  ld_r2                # r2 pruning threshold
         Int    n_ancestry_pcs
         Float  ancestry_prob_threshold # ancestry assignment probability threshold
         String output_prefix
@@ -1756,199 +1777,10 @@ task CreateQCStatusTable {
     runtime { maxRetries: 1 }
 }
 
-
-
-
-## -----------------------------------------------------------------------------
-## PrepareForImputation
-## Checks and prepares the final QC dataset for upload to the TOPMed imputation
-## server. Produces per-chromosome VCF files.
-##
-## Steps:
-##   1. Compute allele frequencies on the final QC dataset (--freq)
-##   2. Run HRC-1000G-check-bim.pl — produces Run-plink.sh with PLINK commands
-##      that fix strand, remove problem SNPs, and split by chromosome
-##   3. Execute the generated Run-plink.sh
-##   4. Convert each per-chromosome PLINK dataset to bgzipped, tabix-indexed VCF
-##
-## The check-bim script removes:
-##   - SNPs absent from the TOPMed reference panel
-##   - Ambiguous SNPs (A/T and C/G) that cannot be strand-resolved
-##   - SNPs with allele frequency difference > 0.2 vs reference
-##   - SNPs with mismatched positions or alleles
-##
-## Reference:
-##   Rayner W (2020) HRC or 1000G Imputation preparation and checking
-##   https://www.well.ox.ac.uk/~wrayner/tools/
-## -----------------------------------------------------------------------------
-task PrepareForImputation {
-    input {
-        File   bed_file
-        File   bim_file
-        File   fam_file
-        File   check_bim_pl      # Path to HRC-1000G-check-bim.pl
-        File   hrc_ref_freq   # HRC reference frequency file (.tab.gz)
-        String output_prefix
-        String plink_bin
-        String perl_bin
-        String bcftools_bin
-        String bgzip_bin
-        String tabix_bin
-    }
-    command <<<
-        set -euo pipefail
-
-        # Decompress HRC reference file if needed
-        # The check-bim script hardcodes /bin/gunzip which may not exist on macOS
-        REF_FILE="~{hrc_ref_freq}"
-        if [[ "$REF_FILE" == *.gz ]]; then
-            gunzip -c "$REF_FILE" > hrc_ref.tab
-            REF_FILE="hrc_ref.tab"
-        fi
-
-        # Step 1: Compute allele frequencies on the final QC-passed dataset
-        # Computed here on the post-relatedness dataset so that frequencies
-        # reflect the actual samples being submitted for imputation.
-        ~{plink_bin} \
-            --bed ~{bed_file} \
-            --bim ~{bim_file} \
-            --fam ~{fam_file} \
-            --freq \
-            --out final_freq
-
-        # Step 2: Run check-bim script against TOPMed reference frequencies
-        # Produces Run-plink.sh containing all fix/filter PLINK commands
-        ~{perl_bin} ~{check_bim_pl} \
-            -b ~{bim_file} \
-            -f final_freq.frq \
-            -r "$REF_FILE" \
-            -h \
-            -o ./
-
-        ls -la
-
-        # Rename the log to a predictable name for WDL output collection
-        # check-bim names it based on the input bim stem
-        # Rename log to predictable name — check-bim names it LOG-<stem>-HRC.txt
-        mv $(ls LOG-*.txt | head -1) check-bim.log
-
-        # the check-bim script's Run-plink.sh ends with `rm TEMP*`
-        # which fails with set -e if no TEMP files exist.
-        # Patch rm TEMP* to rm -f TEMP* — portable across macOS and Linux
-        ~{perl_bin} -i -pe 's/^rm TEMP/rm -f TEMP/' Run-plink.sh
-
-        # Ensure the generated Run-plink.sh uses the configured PLINK binary
-        # rather than relying on `plink` being on the PATH.
-        PLINK_BIN="~{plink_bin}"
-        # Use a different delimiter (#) so replacement paths with / don't
-        # break the perl s/// expression. Keep \b word-boundaries intact.
-        ~{perl_bin} -i -pe 's#\bplink\b#'"$PLINK_BIN"'#g' Run-plink.sh
-
-        # Step 3: Execute the generated PLINK commands
-        # This performs strand flips, removes problem SNPs, and splits by chr
-        bash Run-plink.sh
-
-        # Step 4: Convert each per-chromosome PLINK file to VCF
-        # TOPMed server requires one bgzipped, tabix-indexed VCF per chromosome
-        # Derive chromosome list from the bim file so we handle whatever
-        # chromosomes were selected in the config (not just 1-22).
-        CHROMS=$(awk '{print $1}' ~{bim_file} | sort -u -V)
-
-        for CHR in $CHROMS; do
-            PLINK_PREFIX=$(ls *-updated-chr${CHR}.bed 2>/dev/null \
-                | sed 's/\.bed//' || true)
-
-            # Skip chromosomes with no SNPs (ls returns nothing)
-            if [ -z "$PLINK_PREFIX" ]; then
-                continue
-            fi
-
-
-            # convert to VCF
-            # --real-ref-alleles preserves A1/A2 as ref/alt correctly
-            # vcf is generated already by Run-plink.sh, so this step can be omitted
- 
-            # ~{plink_bin} \
-            #     --bfile "$PLINK_PREFIX" \
-            #     --recode vcf \
-            #     --real-ref-alleles \
-            #     --out ~{output_prefix}_chr${CHR}
-            
-            # Verify the VCF exists before trying to grep
-            VCF_FILE="${PLINK_PREFIX}.vcf"
-            if [ ! -f "$VCF_FILE" ]; then
-                echo "ERROR: VCF file not found for chromosome $CHR: $VCF_FILE" >&2
-                echo "Check if Run-plink.sh completed successfully." >&2
-                exit 1
-            fi
- 
-             
-            # sort VCF by position (required by tabix)
-            grep "^#" "$VCF_FILE" > ~{output_prefix}_chr${CHR}_sorted.vcf
-            grep -v "^#" "$VCF_FILE" \
-                | sort -k1,1V -k2,2n \
-                >> ~{output_prefix}_chr${CHR}_sorted.vcf
-
-            # this was the previous sorting command for the vcf genersted by plink
-            # grep "^#" ~{output_prefix}_chr${CHR}.vcf > ~{output_prefix}_chr${CHR}_sorted.vcf
-            # grep -v "^#" ~{output_prefix}_chr${CHR}.vcf \
-            #     | sort -k1,1V -k2,2n \
-            #     >> ~{output_prefix}_chr${CHR}_sorted.vcf
-
-            # bgzip the sorted VCF and index
-            ~{bgzip_bin} ~{output_prefix}_chr${CHR}_sorted.vcf
-            mv ~{output_prefix}_chr${CHR}_sorted.vcf.gz ~{output_prefix}_chr${CHR}.vcf.gz
-            ~{tabix_bin} -p vcf ~{output_prefix}_chr${CHR}.vcf.gz
-
-            # remove uncompressed vcf
-            rm "$VCF_FILE"
-
-        done
-
-        # Step 5: merge the per-chromosome harmonized filesets back into a
-        # single dataset spanning all chromosomes. This carries exactly the
-        # variant set written to the per-chromosome imputation VCFs (post
-        # strand-fix, post HRC-panel filtering), so the combined bed/bim/fam
-        # is the PLINK-format equivalent of the uploaded VCFs.
-        ls *-updated-chr*.bed 2>/dev/null | sed 's/\.bed$//' > combined_stems.txt || true
-        n_stems=$(wc -l < combined_stems.txt)
-        if [ "$n_stems" -eq 0 ]; then
-            echo "ERROR: no per-chromosome harmonized filesets found to combine" >&2
-            exit 1
-        elif [ "$n_stems" -eq 1 ]; then
-            stem=$(head -1 combined_stems.txt)
-            ~{plink_bin} --bfile "$stem" --make-bed --out ~{output_prefix}_combined
-        else
-            awk '{print $1".bed "$1".bim "$1".fam"}' combined_stems.txt > merge_list.txt
-            ~{plink_bin} --merge-list merge_list.txt --make-bed --out ~{output_prefix}_combined
-        fi
-
-        # Count total SNPs retained across all per-chromosome bim files
-        # and format a log line matching the CountBimFam style
-        n_snps=$(cat *-updated-chr*.bim 2>/dev/null | wc -l || echo 0)
-        n_samples=$(wc -l < ~{fam_file})
-        printf "%-42s  SNPs: %7d   Samples: %5d\n" \
-            "Step 10  Imputation prep (check-bim)" "$n_snps" "$n_samples" \
-            > step11_log.txt
-    >>>
-    output {
-        Array[File] vcf_gz        = glob("~{output_prefix}_chr*.vcf.gz")
-        Array[File] vcf_tbi       = glob("~{output_prefix}_chr*.vcf.gz.tbi")
-        File        check_bim_log = "check-bim.log"
-        String      log_line      = read_string("step11_log.txt")
-        # Combined (all-chromosome) harmonized dataset — PLINK equivalent of the VCFs
-        File        combined_bed  = "~{output_prefix}_combined.bed"
-        File        combined_bim  = "~{output_prefix}_combined.bim"
-        File        combined_fam  = "~{output_prefix}_combined.fam"
-    }
-    runtime { maxRetries: 1 }
-}
-
 ## -----------------------------------------------------------------------------
 ## ConvertToPlink2
 ## Converts a PLINK 1.x binary dataset (bed/bim/fam) to PLINK 2 format
-## (pgen/pvar/psam). Used to emit the combined imputation-ready dataset in
-## PLINK 2 format alongside the PLINK 1 bed/bim/fam.
+## (pgen/pvar/psam).
 ## -----------------------------------------------------------------------------
 task ConvertToPlink2 {
     input {
@@ -2019,10 +1851,6 @@ task SubsetUnrelatedPopulation {
         # Related IIDs to exclude (skip header lines; IID is the last column).
         grep -v '^#' ~{related_list} 2>/dev/null | awk '{print $NF}' > related_iids.txt || true
 
-        # To remove
-        # Unrelated population IIDs = population IIDs minus related IIDs.
-        # awk 'NR==FNR{rel[$1]=1; next} !($1 in rel){print $1}' \
-        #     related_iids.txt pop_iids.txt > keep_iids.txt
 
         # Test if the file related_iids.txt exists and is not empty
         if [ -s related_iids.txt ]; then
@@ -2066,7 +1894,7 @@ task SubsetUnrelatedPopulation {
 
 ## -----------------------------------------------------------------------------
 ## CovariatePCA
-## Computes within-cohort principal components on the final (imputation-prepared)
+## Computes within-cohort principal components on the final
 ## dataset for use as association-analysis covariates.
 ##
 ## Design:
@@ -2097,6 +1925,7 @@ task CovariatePCA {
         Float  ld_r2
         Int    n_covariate_pcs
         String output_prefix
+        String label = "Step 11  Covariate PCA"   # Label for the pipeline log line
         String plink_bin
         String plink2_bin
     }
@@ -2176,7 +2005,7 @@ task CovariatePCA {
 
         n_prune=$(wc -l < cov_prune.prune.in)
         printf "%-42s  %d PCs on %d LD-pruned SNPs (unrelated), projected to all\n" \
-            "Step 12  Covariate PCA" "~{n_covariate_pcs}" "$n_prune" > cov_log.txt
+            "~{label}" "~{n_covariate_pcs}" "$n_prune" > cov_log.txt
     >>>
     output {
         File   eigenvec     = "~{output_prefix}.eigenvec"
@@ -2184,6 +2013,172 @@ task CovariatePCA {
         File   eigenvec_var = "~{output_prefix}.eigenvec.var"
         File   covariates   = "~{output_prefix}_covariates.tsv"
         String log_line      = read_string("cov_log.txt")
+    }
+    runtime { maxRetries: 1 }
+}
+
+## -----------------------------------------------------------------------------
+## PrepareForImputation
+## Checks and prepares the final QC dataset for upload to the TOPMed imputation
+## server, one VCF per chromosome. 
+##
+## Steps:
+##   1. Compute allele frequencies on the final QC dataset (--freq)
+##   2. Run HRC-1000G-check-bim.pl — produces Run-plink.sh with PLINK commands
+##      that fix strand, remove problem SNPs, and split by chromosome
+##   3. Execute the generated Run-plink.sh
+##   4. Convert each per-chromosome PLINK dataset to bgzipped, tabix-indexed VCF
+##   5. Concatenate the per-chromosome bim files into a variant manifest, for
+##      the per-chromosome variant count report (step 13a)
+##
+## The check-bim script removes:
+##   - SNPs absent from the TOPMed reference panel
+##   - Ambiguous SNPs (A/T and C/G) that cannot be strand-resolved
+##   - SNPs with allele frequency difference > 0.2 vs reference
+##   - SNPs with mismatched positions or alleles
+##
+## Reference:
+##   Rayner W (2020) HRC or 1000G Imputation preparation and checking
+##   https://www.well.ox.ac.uk/~wrayner/tools/
+## -----------------------------------------------------------------------------
+task PrepareForImputation {
+    input {
+        File   bed_file
+        File   bim_file
+        File   fam_file
+        File   check_bim_pl      # Path to HRC-1000G-check-bim.pl
+        File   hrc_ref_freq   # HRC reference frequency file (.tab.gz)
+        String output_prefix
+        String plink_bin
+        String perl_bin
+        String bgzip_bin
+        String tabix_bin
+    }
+    command <<<
+        set -euo pipefail
+
+        # Decompress HRC reference file if needed
+        # The check-bim script hardcodes /bin/gunzip which may not exist on macOS
+        REF_FILE="~{hrc_ref_freq}"
+        if [[ "$REF_FILE" == *.gz ]]; then
+            gunzip -c "$REF_FILE" > hrc_ref.tab
+            REF_FILE="hrc_ref.tab"
+        fi
+
+        # Step 1: Compute allele frequencies on the final QC-passed dataset
+        ~{plink_bin} \
+            --bed ~{bed_file} \
+            --bim ~{bim_file} \
+            --fam ~{fam_file} \
+            --freq \
+            --out final_freq
+
+        # Step 2: Run check-bim script against reference frequencies
+        # Produces Run-plink.sh containing all fix/filter PLINK commands
+        ~{perl_bin} ~{check_bim_pl} \
+            -b ~{bim_file} \
+            -f final_freq.frq \
+            -r "$REF_FILE" \
+            -h \
+            -o ./
+
+        ls -la
+
+        # Rename the log to a predictable name for WDL output collection
+        mv $(ls LOG-*.txt | head -1) check-bim.log
+
+        # the check-bim script's Run-plink.sh ends with `rm TEMP*`
+        # which fails with set -e if no TEMP files exist.
+        # Patch rm TEMP* to rm -f TEMP* — portable across macOS and Linux
+        ~{perl_bin} -i -pe 's/^rm TEMP/rm -f TEMP/' Run-plink.sh
+
+        # Ensure the generated Run-plink.sh uses the configured PLINK binary
+        # rather than relying on `plink` being on the PATH.
+        PLINK_BIN="~{plink_bin}"
+        # Use a different delimiter (#) so replacement paths with / don't
+        # break the perl s/// expression. Keep \b word-boundaries intact.
+        ~{perl_bin} -i -pe 's#\bplink\b#'"$PLINK_BIN"'#g' Run-plink.sh
+
+        # Step 3: Execute the generated PLINK commands
+        # This performs strand flips, removes problem SNPs, and splits by chr
+        bash Run-plink.sh
+
+        # Step 4: Convert each per-chromosome PLINK file to VCF
+        # TOPMed server requires one bgzipped, tabix-indexed VCF per chromosome
+        # Derive chromosome list from the bim file.
+        CHROMS=$(awk '{print $1}' ~{bim_file} | sort -u -V)
+
+        for CHR in $CHROMS; do
+            PLINK_PREFIX=$(ls *-updated-chr${CHR}.bed 2>/dev/null \
+                | sed 's/\.bed//' || true)
+
+            # Skip chromosomes with no SNPs (ls returns nothing)
+            if [ -z "$PLINK_PREFIX" ]; then
+                continue
+            fi
+
+
+            # convert to VCF
+            # --real-ref-alleles preserves A1/A2 as ref/alt correctly
+            # vcf is generated already by Run-plink.sh, so this step can be omitted
+ 
+            # ~{plink_bin} \
+            #     --bfile "$PLINK_PREFIX" \
+            #     --recode vcf \
+            #     --real-ref-alleles \
+            #     --out ~{output_prefix}_chr${CHR}
+            
+            # Verify the VCF exists before trying to grep
+            VCF_FILE="${PLINK_PREFIX}.vcf"
+            if [ ! -f "$VCF_FILE" ]; then
+                echo "ERROR: VCF file not found for chromosome $CHR: $VCF_FILE" >&2
+                echo "Check if Run-plink.sh completed successfully." >&2
+                exit 1
+            fi
+ 
+             
+            # sort VCF by position (required by tabix)
+            grep "^#" "$VCF_FILE" > ~{output_prefix}_chr${CHR}_sorted.vcf
+            grep -v "^#" "$VCF_FILE" \
+                | sort -k1,1V -k2,2n \
+                >> ~{output_prefix}_chr${CHR}_sorted.vcf
+
+
+            # bgzip the sorted VCF and index
+            ~{bgzip_bin} ~{output_prefix}_chr${CHR}_sorted.vcf
+            mv ~{output_prefix}_chr${CHR}_sorted.vcf.gz ~{output_prefix}_chr${CHR}.vcf.gz
+            ~{tabix_bin} -p vcf ~{output_prefix}_chr${CHR}.vcf.gz
+
+            # remove uncompressed vcf
+            rm "$VCF_FILE"
+
+        done
+
+        # Step 5: concatenate the per-chromosome harmonized bim files into a
+        # single variant manifest to enable reporting per-chromosome variant counts.
+        ls *-updated-chr*.bim > harmonised_bims.txt 2>/dev/null || true
+        if [ ! -s harmonised_bims.txt ]; then
+            echo "ERROR: no per-chromosome harmonized filesets found" >&2
+            exit 1
+        fi
+        xargs cat < harmonised_bims.txt > harmonised.bim
+
+        # Count total SNPs retained across all per-chromosome bim files
+        # and format a log line matching the CountBimFam style
+        n_snps=$(wc -l < harmonised.bim)
+        n_samples=$(wc -l < ~{fam_file})
+        printf "%-42s  SNPs: %7d   Samples: %5d\n" \
+            "Step 13  Imputation prep (check-bim)" "$n_snps" "$n_samples" \
+            > step13_log.txt
+    >>>
+    output {
+        Array[File] vcf_gz         = glob("~{output_prefix}_chr*.vcf.gz")
+        Array[File] vcf_tbi        = glob("~{output_prefix}_chr*.vcf.gz.tbi")
+        File        check_bim_log  = "check-bim.log"
+        String      log_line       = read_string("step13_log.txt")
+        # Variant manifest of the harmonised set written to the VCFs (bim only,
+        # no genotypes) — feeds the per-chromosome variant count report
+        File        harmonised_bim = "harmonised.bim"
     }
     runtime { maxRetries: 1 }
 }
