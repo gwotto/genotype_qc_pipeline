@@ -12,6 +12,8 @@ ancestry-aware extensions.
 
 ### 1. Install dependencies
 
+Install dependencies as a conda environment:
+
 ```bash
 conda env create -f environment.yml
 conda activate genotype_qc
@@ -20,6 +22,10 @@ conda activate genotype_qc
 Required tools (all provided by the conda environment): `plink` 1.9,
 `plink2`, `Rscript` ≥ 4.0, `perl`, `bcftools`, `bgzip`, `tabix`, and
 `openjdk` ≥ 11 (for Cromwell).
+
+Install Cromwell from https://cromwell.readthedocs.io/en/latest/.
+
+
 
 ### 2. Download reference files
 
