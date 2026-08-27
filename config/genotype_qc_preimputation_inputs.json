@@ -24,7 +24,6 @@
   "genotype_qc_preimputation.plink2_bin": "plink2",
   "genotype_qc_preimputation.rscript_bin": "Rscript",
   "genotype_qc_preimputation.perl_bin": "perl",
-  "genotype_qc_preimputation.bcftools_bin": "bcftools",
   "genotype_qc_preimputation.bgzip_bin": "bgzip",
   "genotype_qc_preimputation.tabix_bin": "tabix",
   

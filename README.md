@@ -23,18 +23,24 @@ Required tools (all provided by the conda environment): `plink` 1.9,
 
 ### 2. Download reference files
 
+The pipeline requires accessory data and reference files:
+1. A list of high-LD regions.
+2. Reference variants for the harmonisation of study variants with imputation variants. 
+3. A reference panel for ancestry PCA, containing superpopulation labels, processed and LD-pruned. 
+
+For GRCh37/hg19, these can be downloaded from their respective sources and processed
+using the provided script:
+
+
 ```bash
 bash src/download_resources.bash
 ```
 
-This downloads:
+This downloads and generates:
 - `high-LD-regions-hg19-GRCh37.txt` — regions excluded from LD pruning
 - `HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz` — HRC imputation reference frequencies
+- The 1000 Genomes Phase 3 reference panel in PLINK binary format (hg19, biallelic SNPs only) with an accompanying `.psam` file containing a `SuperPop` column (`EUR`, `AFR`, `EAS`, `SAS`, `AMR`).
 
-You also need a 1000 Genomes Phase 3 reference panel in PLINK binary
-format (hg19, biallelic SNPs only) with an accompanying `.psam` file
-containing a `SuperPop` column (`EUR`, `AFR`, `EAS`, `SAS`, `AMR`). This can be 
-obtained from https://www.cog-genomics.org/plink/2.0/resources#1kg_phase3
 
 ### 3. Configure
 

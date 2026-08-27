@@ -291,6 +291,7 @@ Every key is prefixed with `genotype_qc_preimputation.`.
 
 ### Reference files
 
+
 | Parameter | Description |
 |-----------|-------------|
 | `ld_regions` | High-LD genomic regions excluded from LD pruning. Tab-separated, four columns: chr start end name (hg19). Download with `bash src/download_resources.bash`. |
@@ -299,14 +300,37 @@ Every key is prefixed with `genotype_qc_preimputation.`.
 | `hrc_ref_freq` | HRC r1.1 GRCh37 allele frequency file (`.tab.gz`). Download with `bash src/download_resources.bash`. |
 
 
-This script downloads a list of High-LD regions (hg19) and HRC reference panel frequency file for SNP ref/alt alignment:
-
-```bash
-# High-LD regions (hg19) and HRC frequency file
-bash src/download_resources.bash
-```
 The 1000 Genomes Phase 3 reference panel is required for ancestry assignment. A biallelic-SNP-only, hg19, PLINK binary version of the 1000G Phase 3 panel can be obtained from https://www.cog-genomics.org/plink/2.0/resources#1kg_phase3. The companion .psam file contains a SuperPop column with values: EUR, AFR, EAS, SAS, AMR, that are needed for the ancestry assignment.
 
+The pipeline requires accessory data and reference files:
+1. A list of high-LD regions.
+2. Reference variants for the harmonisation of study variants with imputation variants. 
+3. A reference panel for ancestry PCA, containing superpopulation labels, processed and LD-pruned. 
+
+For GRCh37/hg19, these can be downloaded from their respective sources and processed
+using the provided script:
+
+```bash
+bash src/download_resources.bash
+```
+
+The files it retrieves come from the following sources:
+
+- `high-LD-regions-hg19-GRCh37.txt` — 18 long-range high-LD regions on
+  GRCh37, among them the MHC on chromosome 6 and the inversion on chromosome 8.
+  Distributed as reference data with the plinkQC R package (Meyer lab, CSHL).
+- `HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz` — the site list of Haplotype
+  Reference Consortium release 1.1 on GRCh37, restricted to sites with a minor
+  allele count of at least 5, published by the HRC on the Sanger Institute FTP
+  server. It supplies the reference/alternate alleles and allele frequencies
+  that study variants are harmonised against.
+- `all_phase3.pgen`, `all_phase3.pvar`, `all_phase3.psam` — 1000 Genomes
+  Phase 3 on GRCh37 (2504 samples from 26 populations, roughly 85 million
+  variants), converted to PLINK 2 binary format and hosted by the PLINK 2
+  developers on their resources page. The `.psam` is the corrected sample
+  table, which carries the population and `SuperPop` labels. These files are
+  the raw material from which the script builds the LD-pruned ancestry PCA
+  panel, `all_phase3_pruned_final.{bed,bim,fam}`.
 
 ### Script paths
 

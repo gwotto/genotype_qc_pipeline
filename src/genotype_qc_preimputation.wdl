@@ -160,7 +160,6 @@ workflow genotype_qc_preimputation {
         File   check_bim_pl  # Will Rayner's HRC-1000G-check-bim.pl script
         File   hrc_ref_freq  # HRC r1.1 GRCh37 reference frequency file
         String perl_bin      # Perl interpreter
-        String bcftools_bin  # bcftools binary
         String bgzip_bin   # bgzip binary
         String tabix_bin   # tabix binary
 
@@ -263,7 +262,6 @@ workflow genotype_qc_preimputation {
             mind_thresholds  = [0.01, 0.02, 0.03, 0.05, 0.1, 0.2],
             geno_threshold   = geno_threshold,
             mind_threshold   = mind_threshold,
-            output_prefix    = output_prefix + "_sweep",
             plink_bin        = plink_bin,
             rscript_bin      = rscript_bin,
             threshold_plot_r = threshold_plot_r
@@ -1027,7 +1025,6 @@ task ThresholdSweep {
         Array[Float] mind_thresholds   # Sample missingness thresholds to test
         Float        geno_threshold    # chosen threshold — passed to plot
         Float        mind_threshold    # chosen threshold — passed to plot
-        String       output_prefix
         String       plink_bin
         String       rscript_bin
         File         threshold_plot_r
