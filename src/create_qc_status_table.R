@@ -43,7 +43,7 @@ qc_status <- ancestry |>
 if (!is.na(pca_file) && pca_file != "NA" && file.exists(pca_file)) {
   pcs <- read_tsv(pca_file, col_types = cols(FID = col_character(), IID = col_character()))
   qc_status <- qc_status |>
-    left_join(pcs, by = c("FID", "IID"))
+    inner_join(pcs, by = c("FID", "IID"))
   cat(sprintf("Appended %d covariate PCs from: %s\n", ncol(pcs) - 2, pca_file))
 }
 
