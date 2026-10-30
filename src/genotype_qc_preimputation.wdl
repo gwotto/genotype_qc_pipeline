@@ -74,7 +74,7 @@ version 1.0
 
 workflow genotype_qc_preimputation {
 
-     String pipeline_version = "v2026-08.3"
+     String pipeline_version = "v2026-10.1"
 
     input {
         # -- Input genotype files -------------------------------------------
