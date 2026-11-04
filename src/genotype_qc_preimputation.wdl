@@ -1679,7 +1679,7 @@ task AncestryPCA {
 
         # Build a variant list from the .afreq output so that steps 4 and 4b
         # use only variants with non-zero frequency in the reference subset.
-        awk 'NR>1 {print $2}' ref_prune.afreq > ref_prune_mac1.snplist
+        awk 'NR==1 {for(i=1;i<=NF;i++) if($i=="ALT_FREQS") fc=i; next} $fc>0 && $fc<1 {print $2}' ref_prune.afreq > ref_prune_mac1.snplist
 
         # Step 4: PCA on the 1000G reference, saving variant weights for projection.
         ~{plink2_bin} \
@@ -1975,7 +1975,7 @@ task CovariatePCA {
 
         # Build a variant list from the .afreq output so that steps (4) and (5)
         # use only variants with non-zero frequency in the unrelated subset.
-        awk 'NR>1 {print $2}' cov_ref_freq.afreq > cov_prune_mac1.snplist
+        awk 'NR==1 {for(i=1;i<=NF;i++) if($i=="ALT_FREQS") fc=i; next} $fc>0 && $fc<1 {print $2}' cov_ref_freq.afreq > cov_prune_mac1.snplist
 
         # (4) PCA on the unrelated samples; save variant weights for projection.
         ~{plink2_bin} \
