@@ -1664,21 +1664,30 @@ task AncestryPCA {
         n_pruned=$(wc -l < ref_prune.prune.in)
         echo "Reference SNPs after LD pruning: $n_pruned"
 
-        # Step 4: PCA on the 1000G reference, saving variant weights for projection.
-        ~{plink2_bin} \
-            --bfile ${ref_pca} \
-            --extract ref_prune.prune.in \
-            --pca ~{n_ancestry_pcs} biallelic-var-wts \
-            --out ~{output_prefix}
-
         # Step 4a: reference allele frequencies for projection standardisation.
         # These must match the frequencies used during PCA so that projected
         # study scores land on the same scale as the reference eigenvec scores.
+        # --mac 1 excludes variants that are monomorphic in the (possibly
+        # population-filtered) reference subset, which would cause division by
+        # zero during variance-standardised projection in step 4b.
         ~{plink2_bin} \
             --bfile ${ref_pca} \
             --extract ref_prune.prune.in \
+            --mac 1 \
             --freq \
             --out ref_prune
+
+        # Build a variant list from the .afreq output so that steps 4 and 4b
+        # use only variants with non-zero frequency in the reference subset.
+        awk 'NR>1 {print $2}' ref_prune.afreq > ref_prune_mac1.snplist
+
+        # Step 4: PCA on the 1000G reference, saving variant weights for projection.
+        ~{plink2_bin} \
+            --bfile ${ref_pca} \
+            --extract ref_prune_mac1.snplist \
+            --read-freq ref_prune.afreq \
+            --pca ~{n_ancestry_pcs} biallelic-var-wts \
+            --out ~{output_prefix}
 
         # Step 4b: project ALL study samples (related and unrelated) onto the
         # reference PC space using the variant weights from step 4.
@@ -1691,7 +1700,7 @@ task AncestryPCA {
             --bed ~{bed_file} \
             --bim ~{bim_file} \
             --fam ~{fam_file} \
-            --extract ref_prune.prune.in \
+            --extract ref_prune_mac1.snplist \
             --chr 1-22 \
             --read-freq ref_prune.afreq \
             --score ~{output_prefix}.eigenvec.var 2 4 header no-mean-imputation variance-standardize \
@@ -1951,14 +1960,22 @@ task CovariatePCA {
 
         # (3) Reference allele frequencies from the unrelated samples, used both
         # for the PCA and to standardise the projection consistently.
+        # --mac 1 excludes variants that are monomorphic in the unrelated subset
+        # but polymorphic in the full sample, which would cause division by zero
+        # during variance-standardised projection in step (5).
         ~{plink2_bin} \
             --bed ~{bed_file} \
             --bim ~{bim_file} \
             --fam ~{fam_file} \
             ${REMOVE_ARG} \
             --extract cov_prune.prune.in \
+            --mac 1 \
             --freq \
             --out cov_ref_freq
+
+        # Build a variant list from the .afreq output so that steps (4) and (5)
+        # use only variants with non-zero frequency in the unrelated subset.
+        awk 'NR>1 {print $2}' cov_ref_freq.afreq > cov_prune_mac1.snplist
 
         # (4) PCA on the unrelated samples; save variant weights for projection.
         ~{plink2_bin} \
@@ -1966,7 +1983,7 @@ task CovariatePCA {
             --bim ~{bim_file} \
             --fam ~{fam_file} \
             ${REMOVE_ARG} \
-            --extract cov_prune.prune.in \
+            --extract cov_prune_mac1.snplist \
             --read-freq cov_ref_freq.afreq \
             --pca ~{n_covariate_pcs} biallelic-var-wts \
             --out ~{output_prefix}
@@ -1978,7 +1995,7 @@ task CovariatePCA {
             --bed ~{bed_file} \
             --bim ~{bim_file} \
             --fam ~{fam_file} \
-            --extract cov_prune.prune.in \
+            --extract cov_prune_mac1.snplist \
             --read-freq cov_ref_freq.afreq \
             --score ~{output_prefix}.eigenvec.var 2 4 header no-mean-imputation variance-standardize \
             --score-col-nums 5-${score_end} \
